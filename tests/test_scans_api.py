@@ -1,13 +1,49 @@
 from unittest.mock import patch
+import uuid
 from uuid import uuid4
 
-from app.db.models import ScanJob, ScanStatusEnum
+import pytest
+
+from app.core.security import create_access_token, get_password_hash
+from app.db.models import ScanJob, ScanStatusEnum, User
+
+
+def create_test_user(db_session, email_prefix: str = "user", is_superuser: bool = False):
+    user = User(
+        email=f"{email_prefix}_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password=get_password_hash("StrongPassword123!"),
+        is_active=True,
+        is_superuser=is_superuser,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+    token = create_access_token({"sub": str(user.id)})
+    return user, {"Authorization": f"Bearer {token}"}
+
+
+def test_unauthenticated_create_scan_rejected(client):
+    response = client.post(
+        "/api/v1/scans/",
+        json={
+            "target": "https://example.com",
+            "options": {"ssl_scan": True, "headers_scan": False, "port_scan": False},
+        },
+    )
+    assert response.status_code == 401
+
+
+def test_unauthenticated_get_scan_rejected(client):
+    response = client.get(f"/api/v1/scans/{uuid4()}")
+    assert response.status_code == 401
 
 
 @patch("app.api.v1.scans.scan_task.delay")
 def test_create_scan_returns_pending(mock_delay, client, db_session):
+    user, headers = create_test_user(db_session)
     response = client.post(
         "/api/v1/scans/",
+        headers=headers,
         json={
             "target": "https://example.com",
             "options": {"ssl_scan": True, "headers_scan": False, "port_scan": False},
@@ -19,14 +55,22 @@ def test_create_scan_returns_pending(mock_delay, client, db_session):
     assert "scan_id" in data
     mock_delay.assert_called_once()
 
+    scan_id = uuid.UUID(data["scan_id"])
+    job = db_session.get(ScanJob, scan_id)
+    assert job is not None
+    assert job.user_id == user.id
 
-def test_get_scan_not_found(client):
-    response = client.get(f"/api/v1/scans/{uuid4()}")
+
+def test_get_scan_not_found(client, db_session):
+    _, headers = create_test_user(db_session)
+    response = client.get(f"/api/v1/scans/{uuid4()}", headers=headers)
     assert response.status_code == 404
 
 
 def test_get_scan_completed(client, db_session):
+    user, headers = create_test_user(db_session)
     job = ScanJob(
+        user_id=user.id,
         target_url="https://example.com",
         status=ScanStatusEnum.COMPLETED,
         result_payload={
@@ -40,9 +84,58 @@ def test_get_scan_completed(client, db_session):
     db_session.commit()
     db_session.refresh(job)
 
-    response = client.get(f"/api/v1/scans/{job.id}")
+    response = client.get(f"/api/v1/scans/{job.id}", headers=headers)
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "COMPLETED"
     assert data["result"] is not None
     assert "ssl" in data["result"]["modules"]
+
+
+def test_user_cannot_read_another_users_scan(client, db_session):
+    user_a, _ = create_test_user(db_session, email_prefix="usera")
+    _, headers_b = create_test_user(db_session, email_prefix="userb")
+
+    job = ScanJob(
+        user_id=user_a.id,
+        target_url="https://example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload={
+            "target": "https://example.com",
+            "scanned_at": "2026-05-15T00:00:00+00:00",
+            "modules": {},
+            "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    # User B requests User A's scan
+    response = client.get(f"/api/v1/scans/{job.id}", headers=headers_b)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Scan not found"
+
+
+def test_superuser_can_read_another_users_scan(client, db_session):
+    user_a, _ = create_test_user(db_session, email_prefix="usera")
+    _, admin_headers = create_test_user(db_session, email_prefix="admin", is_superuser=True)
+
+    job = ScanJob(
+        user_id=user_a.id,
+        target_url="https://example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload={
+            "target": "https://example.com",
+            "scanned_at": "2026-05-15T00:00:00+00:00",
+            "modules": {},
+            "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    response = client.get(f"/api/v1/scans/{job.id}", headers=admin_headers)
+    assert response.status_code == 200
+    assert response.json()["status"] == "COMPLETED"

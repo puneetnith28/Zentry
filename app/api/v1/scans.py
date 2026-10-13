@@ -3,11 +3,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db
+from app.api.dependencies import get_current_user, get_db
 from app.core.config import get_settings
-from app.core.security import verify_api_key
 from app.core.target_validation import TargetValidationError, validate_scan_target
-from app.db.models import ScanJob, ScanStatusEnum
+from app.db.models import ScanJob, ScanStatusEnum, User
 from app.schemas.scan import (
     FindingSummary,
     ScanCreateRequest,
@@ -24,10 +23,10 @@ router = APIRouter(prefix="/scans", tags=["scans"])
     "/",
     response_model=ScanCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(verify_api_key)],
 )
 def create_scan(
     body: ScanCreateRequest,
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ScanCreateResponse:
     settings = get_settings()
@@ -43,6 +42,7 @@ def create_scan(
         ) from exc
 
     job = ScanJob(
+        user_id=current_user.id,
         target_url=normalized,
         status=ScanStatusEnum.PENDING,
         options=body.options.model_dump(),
@@ -59,11 +59,14 @@ def create_scan(
 @router.get(
     "/{scan_id}",
     response_model=ScanDetailResponse,
-    dependencies=[Depends(verify_api_key)],
 )
-def get_scan(scan_id: UUID, db: Session = Depends(get_db)) -> ScanDetailResponse:
+def get_scan(
+    scan_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ScanDetailResponse:
     job = db.get(ScanJob, scan_id)
-    if job is None:
+    if job is None or (job.user_id != current_user.id and not current_user.is_superuser):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Scan not found",
