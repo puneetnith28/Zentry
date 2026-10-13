@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -99,6 +99,11 @@ class ScanJob(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
+    )
+
+    __table_args__ = (
+        Index("ix_scan_jobs_user_id_created_at", "user_id", "created_at"),
+        Index("ix_scan_jobs_created_at", "created_at"),
     )
 
     owner: Mapped[User | None] = relationship("User", back_populates="scans")

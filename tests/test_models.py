@@ -97,3 +97,12 @@ def test_scan_status_enum_persistence_across_all_values(db_session):
     saved_jobs = db_session.query(ScanJob).all()
     saved_statuses = {j.status for j in saved_jobs}
     assert saved_statuses == set(ScanStatusEnum)
+
+
+def test_scan_job_indexes_defined():
+    table = ScanJob.__table__
+    index_names = {idx.name for idx in table.indexes}
+    assert "ix_scan_jobs_user_id_created_at" in index_names
+    assert "ix_scan_jobs_created_at" in index_names
+    assert "ix_scan_jobs_user_id" in index_names
+    assert "ix_scan_jobs_status" in index_names
