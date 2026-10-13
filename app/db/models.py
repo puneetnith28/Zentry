@@ -50,6 +50,15 @@ class ScanStatusEnum(str, enum.Enum):
     RUNNING = "RUNNING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+    @classmethod
+    def terminal_statuses(cls) -> set["ScanStatusEnum"]:
+        return {cls.COMPLETED, cls.FAILED, cls.CANCELLED}
+
+    @classmethod
+    def active_statuses(cls) -> set["ScanStatusEnum"]:
+        return {cls.PENDING, cls.RUNNING}
 
 
 class ScanJob(Base):
@@ -66,9 +75,16 @@ class ScanJob(Base):
     )
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     status: Mapped[ScanStatusEnum] = mapped_column(
-        Enum(ScanStatusEnum, name="scan_status", native_enum=False),
+        Enum(
+            ScanStatusEnum,
+            name="scan_status",
+            native_enum=False,
+            values_callable=lambda obj: [e.value for e in obj],
+            length=20,
+        ),
         default=ScanStatusEnum.PENDING,
         nullable=False,
+        index=True,
     )
     options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)

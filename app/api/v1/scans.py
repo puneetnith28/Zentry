@@ -59,7 +59,7 @@ def create_scan(
             db.query(ScanJob)
             .filter(
                 ScanJob.user_id == current_user.id,
-                ScanJob.status.in_([ScanStatusEnum.PENDING, ScanStatusEnum.RUNNING]),
+                ScanJob.status.in_(ScanStatusEnum.active_statuses()),
             )
             .count()
         )

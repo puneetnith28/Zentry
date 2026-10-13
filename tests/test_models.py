@@ -67,3 +67,33 @@ def test_user_scans_relationship_definition():
     )
     assert scan.owner == user
     assert scan in user.scans
+
+
+def test_scan_status_enum_values_and_helpers():
+    expected_values = {"PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"}
+    actual_values = {status.value for status in ScanStatusEnum}
+    assert actual_values == expected_values
+
+    assert ScanStatusEnum.terminal_statuses() == {
+        ScanStatusEnum.COMPLETED,
+        ScanStatusEnum.FAILED,
+        ScanStatusEnum.CANCELLED,
+    }
+    assert ScanStatusEnum.active_statuses() == {
+        ScanStatusEnum.PENDING,
+        ScanStatusEnum.RUNNING,
+    }
+
+
+def test_scan_status_enum_persistence_across_all_values(db_session):
+    for status_val in ScanStatusEnum:
+        job = ScanJob(
+            target_url=f"https://status-{status_val.value.lower()}.example.com",
+            status=status_val,
+        )
+        db_session.add(job)
+    db_session.commit()
+
+    saved_jobs = db_session.query(ScanJob).all()
+    saved_statuses = {j.status for j in saved_jobs}
+    assert saved_statuses == set(ScanStatusEnum)
