@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import socket
 from typing import Final
+from urllib.parse import urljoin, urlparse
 
 import httpcore
 import httpx
@@ -22,6 +23,16 @@ class ProhibitedDestinationError(ValueError):
 
 class DNSResolutionError(ValueError):
     """Raised when DNS resolution for an outbound target fails."""
+    pass
+
+
+class SafeRedirectError(ProhibitedDestinationError):
+    """Raised when an HTTP redirect targets a prohibited destination or protocol."""
+    pass
+
+
+class MaxRedirectsExceededError(ValueError):
+    """Raised when an HTTP request exceeds maximum allowed redirect hops."""
     pass
 
 
@@ -252,3 +263,79 @@ def create_safe_async_client(
         trust_env=trust_env,
         **kwargs,
     )
+
+
+async def safe_request(
+    method: str,
+    url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    max_redirects: int = 5,
+    timeout: float = 10.0,
+    **kwargs,
+) -> httpx.Response:
+    """
+    Perform an outbound HTTP request with strict hop-by-hop redirect revalidation.
+
+    Guarantees:
+    - Every redirect target is normalized and validated against outbound IP policy.
+    - Unsupported schemes (file, gopher, ftp, data) in Location headers are rejected.
+    - Redirect loops and excessive chains are aborted at max_redirects.
+    """
+    current_url = url
+    redirect_count = 0
+    close_client = False
+
+    if client is None:
+        client = create_safe_async_client(timeout=timeout)
+        close_client = True
+
+    try:
+        while True:
+            parsed = urlparse(current_url)
+            if parsed.scheme not in ("http", "https"):
+                raise SafeRedirectError(
+                    f"Unsupported scheme '{parsed.scheme}' in URL: {current_url}"
+                )
+
+            if not parsed.hostname:
+                raise SafeRedirectError(f"Missing hostname in URL: {current_url}")
+
+            response = await client.request(
+                method=method,
+                url=current_url,
+                **kwargs,
+            )
+
+            if response.status_code in (301, 302, 303, 307, 308) and "location" in response.headers:
+                redirect_count += 1
+                if redirect_count > max_redirects:
+                    raise MaxRedirectsExceededError(
+                        f"Maximum redirect hops ({max_redirects}) exceeded for {url}"
+                    )
+
+                raw_location = response.headers["location"]
+                next_url = urljoin(current_url, raw_location)
+                parsed_next = urlparse(next_url)
+
+                if parsed_next.scheme not in ("http", "https"):
+                    raise SafeRedirectError(
+                        f"Redirect target uses prohibited scheme '{parsed_next.scheme}': {next_url}"
+                    )
+
+                if not parsed_next.hostname:
+                    raise SafeRedirectError(f"Redirect target missing hostname: {next_url}")
+
+                default_port = 443 if parsed_next.scheme == "https" else 80
+                port = parsed_next.port or default_port
+                resolve_public_target(parsed_next.hostname, port)
+
+                current_url = next_url
+                if response.status_code == 303:
+                    method = "GET"
+                continue
+
+            return response
+    finally:
+        if close_client:
+            await client.aclose()

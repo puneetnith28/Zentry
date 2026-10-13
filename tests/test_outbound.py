@@ -178,3 +178,70 @@ async def test_safe_client_defaults():
     assert client.timeout.connect == 15.0
     assert isinstance(client._transport, SafeAsyncHTTPTransport)
     await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_safe_request_redirect_to_private_blocked(monkeypatch):
+    import httpx
+    from app.core.outbound import safe_request, ProhibitedDestinationError
+
+    async def mock_handler(request: httpx.Request):
+        if "start" in str(request.url):
+            return httpx.Response(302, headers={"location": "http://127.0.0.1:8000/internal"})
+        return httpx.Response(200, text="ok")
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ProhibitedDestinationError) as exc:
+            await safe_request("GET", "http://example.com/start", client=client)
+        assert "resolves to prohibited address: 127.0.0.1" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_request_redirect_to_prohibited_scheme():
+    import httpx
+    from app.core.outbound import safe_request, SafeRedirectError
+
+    async def mock_handler(request: httpx.Request):
+        return httpx.Response(302, headers={"location": "file:///etc/passwd"})
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(SafeRedirectError) as exc:
+            await safe_request("GET", "http://example.com/start", client=client)
+        assert "prohibited scheme 'file'" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_request_max_redirects_exceeded():
+    import httpx
+    from app.core.outbound import safe_request, MaxRedirectsExceededError
+
+    async def mock_handler(request: httpx.Request):
+        return httpx.Response(302, headers={"location": "http://example.com/loop"})
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(MaxRedirectsExceededError) as exc:
+            await safe_request("GET", "http://example.com/loop", client=client, max_redirects=3)
+        assert "Maximum redirect hops (3) exceeded" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_request_successful_public_redirect(monkeypatch):
+    import httpx
+    from app.core.outbound import safe_request
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 443))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    async def mock_handler(request: httpx.Request):
+        if str(request.url) == "http://example.com/":
+            return httpx.Response(301, headers={"location": "https://example.com/final"})
+        return httpx.Response(200, text="Destination reached successfully")
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        res = await safe_request("GET", "http://example.com/", client=client)
+        assert res.status_code == 200
+        assert res.text == "Destination reached successfully"
