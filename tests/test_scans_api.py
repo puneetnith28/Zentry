@@ -139,3 +139,73 @@ def test_superuser_can_read_another_users_scan(client, db_session):
     response = client.get(f"/api/v1/scans/{job.id}", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["status"] == "COMPLETED"
+
+
+def test_scan_with_valid_and_deduped_port_list(client, db_session):
+    _, headers = create_test_user(db_session)
+    with patch("app.api.v1.scans.scan_task.delay"):
+        response = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={
+                "target": "https://example.com",
+                "options": {"port_scan": True, "port_list": [80, 443, 80, 8080]},
+            },
+        )
+    assert response.status_code == 202
+    scan_id = uuid.UUID(response.json()["scan_id"])
+    job = db_session.get(ScanJob, scan_id)
+    assert job is not None
+    assert job.options["port_list"] == [80, 443, 8080]
+
+
+def test_scan_with_invalid_port_range_rejected(client, db_session):
+    _, headers = create_test_user(db_session)
+    # Port 0
+    res_zero = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"port_scan": True, "port_list": [0, 80]},
+        },
+    )
+    assert res_zero.status_code == 422
+
+    # Port 70000
+    res_high = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"port_scan": True, "port_list": [70000]},
+        },
+    )
+    assert res_high.status_code == 422
+
+
+def test_scan_with_excessive_ports_rejected(client, db_session):
+    _, headers = create_test_user(db_session)
+    too_many_ports = list(range(1, 55))  # 54 ports (> 50)
+    response = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"port_scan": True, "port_list": too_many_ports},
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_scan_with_empty_port_list_rejected(client, db_session):
+    _, headers = create_test_user(db_session)
+    response = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"port_scan": True, "port_list": []},
+        },
+    )
+    assert response.status_code == 422
