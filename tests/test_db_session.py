@@ -1,0 +1,47 @@
+from unittest.mock import MagicMock, patch
+import pytest
+from sqlalchemy.exc import OperationalError
+
+from app.db.models import Base
+from app.db.session import check_db_connectivity, init_db
+
+
+def test_init_db_does_not_call_create_all():
+    with patch.object(Base.metadata, "create_all") as mock_create_all:
+        with patch("app.db.session.engine.connect") as mock_connect:
+            mock_conn = MagicMock()
+            mock_connect.return_value.__enter__.return_value = mock_conn
+
+            init_db()
+
+            mock_create_all.assert_not_called()
+            mock_connect.assert_called_once()
+            mock_conn.execute.assert_called_once()
+
+
+def test_check_db_connectivity_retries_on_operational_error():
+    with patch("app.db.session.time.sleep") as mock_sleep:
+        with patch("app.db.session.engine.connect") as mock_connect:
+            mock_conn = MagicMock()
+            # Fail twice with OperationalError, then succeed
+            mock_connect.side_effect = [
+                OperationalError("connection failed", None, None),
+                OperationalError("connection failed", None, None),
+                MagicMock(__enter__=MagicMock(return_value=mock_conn), __exit__=MagicMock()),
+            ]
+
+            check_db_connectivity(max_retries=3, retry_interval=0.1)
+
+            assert mock_connect.call_count == 3
+            assert mock_sleep.call_count == 2
+
+
+def test_check_db_connectivity_raises_after_max_retries():
+    with patch("app.db.session.time.sleep"):
+        with patch("app.db.session.engine.connect") as mock_connect:
+            mock_connect.side_effect = OperationalError("connection failed", None, None)
+
+            with pytest.raises(OperationalError):
+                check_db_connectivity(max_retries=2, retry_interval=0.01)
+
+            assert mock_connect.call_count == 2
