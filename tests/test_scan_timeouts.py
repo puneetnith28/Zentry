@@ -73,3 +73,70 @@ def test_scan_task_time_limits_configured():
     assert celery_app.conf.task_time_limit == 300
     assert celery_app.conf.task_soft_time_limit == 270
 
+
+def test_classify_worker_exception_mappings():
+    import socket
+    from celery.exceptions import SoftTimeLimitExceeded
+    import httpx
+    from app.core.outbound import ProhibitedDestinationError
+    from app.core.target_validation import TargetValidationError
+    from app.worker.tasks import classify_worker_exception
+
+    # Policy blocked
+    code, msg = classify_worker_exception(ProhibitedDestinationError("Blocked IP"))
+    assert code == "POLICY_BLOCKED"
+    assert "security policy" in msg.lower()
+
+    code, msg = classify_worker_exception(TargetValidationError("Invalid target"))
+    assert code == "POLICY_BLOCKED"
+
+    # Network timeout
+    code, msg = classify_worker_exception(SoftTimeLimitExceeded())
+    assert code == "NETWORK_TIMEOUT"
+
+    code, msg = classify_worker_exception(asyncio.TimeoutError())
+    assert code == "NETWORK_TIMEOUT"
+
+    code, msg = classify_worker_exception(socket.timeout())
+    assert code == "NETWORK_TIMEOUT"
+
+    # Target unreachable
+    code, msg = classify_worker_exception(socket.gaierror("Name resolution failed"))
+    assert code == "TARGET_UNREACHABLE"
+    assert "unreachable" in msg.lower()
+
+    code, msg = classify_worker_exception(ConnectionRefusedError())
+    assert code == "TARGET_UNREACHABLE"
+
+    # Scanner error (unexpected internal error must be sanitized)
+    raw_sensitive_error = RuntimeError("Database connection string leaked: postgres://user:secret@db/internal")
+    code, msg = classify_worker_exception(raw_sensitive_error)
+    assert code == "SCANNER_ERROR"
+    assert "secret" not in msg
+    assert "postgres" not in msg
+    assert "internal error" in msg.lower()
+
+
+def test_scan_task_sanitizes_internal_exception(db_session):
+    job = ScanJob(
+        target_url="https://sanitize-test.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    # Simulate catastrophic internal exception with sensitive traceback info
+    with patch(
+        "app.worker.tasks._execute_scan_with_deadline",
+        side_effect=RuntimeError("Leaked filesystem path /root/.secret_key"),
+    ):
+        scan_task(str(job.id), db=db_session)
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.FAILED
+    assert job.error_message == "[SCANNER_ERROR] An internal error occurred during scan execution"
+    assert "/root/.secret_key" not in job.error_message
+
+

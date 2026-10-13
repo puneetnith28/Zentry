@@ -3,14 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+import socket
 from datetime import datetime, timezone
 from typing import Any
 
 from celery.exceptions import SoftTimeLimitExceeded
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.celery_app import celery_app
 from app.core.config import get_settings
+from app.core.outbound import ProhibitedDestinationError
+from app.core.target_validation import TargetValidationError
 from app.db.models import ScanJob, ScanStatusEnum
 from app.db.session import SessionLocal
 from app.services.common import summarize_findings
@@ -21,6 +25,43 @@ from app.services.subdomain import discover_subdomains_async
 from app.services.technology import inspect_technology_async
 
 logger = logging.getLogger(__name__)
+
+
+def classify_worker_exception(exc: BaseException) -> tuple[str, str]:
+    """Map internal exceptions to standardized, client-safe error codes and descriptions.
+
+    Prevents raw traceback, host path, or library error leakage to clients.
+    """
+    if isinstance(exc, (ProhibitedDestinationError, TargetValidationError)):
+        return (
+            "POLICY_BLOCKED",
+            "Target destination is prohibited by outbound security policy",
+        )
+    if isinstance(exc, SoftTimeLimitExceeded):
+        return (
+            "NETWORK_TIMEOUT",
+            "Scan task exceeded maximum worker execution deadline",
+        )
+    if isinstance(
+        exc,
+        (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, socket.timeout),
+    ):
+        return (
+            "NETWORK_TIMEOUT",
+            "Scan execution timed out waiting for target response",
+        )
+    if isinstance(
+        exc,
+        (socket.gaierror, ConnectionRefusedError, httpx.ConnectError, OSError),
+    ) and not isinstance(exc, (ProhibitedDestinationError, TargetValidationError)):
+        return (
+            "TARGET_UNREACHABLE",
+            "Target host is unreachable or domain name could not be resolved",
+        )
+    return (
+        "SCANNER_ERROR",
+        "An internal error occurred during scan execution",
+    )
 
 
 def _module_result_to_dict(result: Any) -> dict[str, Any]:
@@ -35,9 +76,10 @@ def _module_result_to_dict(result: Any) -> dict[str, Any]:
         }
     if isinstance(result, BaseException):
         # We caught an unhandled exception during the async scan module
+        code, msg = classify_worker_exception(result)
         return {
             "status": "error",
-            "error": {"code": "MODULE_EXCEPTION", "message": str(result)},
+            "error": {"code": code, "message": msg},
             "findings": [],
         }
     # Fallback for weird edge cases
@@ -154,24 +196,27 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
             job.result_payload = payload
             job.transition_to(ScanStatusEnum.COMPLETED)
             job.error_message = None
-        except SoftTimeLimitExceeded:
+        except SoftTimeLimitExceeded as exc:
             logger.warning("Scan %s exceeded Celery soft time limit (270s)", scan_id)
             if job.can_transition_to(ScanStatusEnum.FAILED):
                 job.transition_to(ScanStatusEnum.FAILED)
-            job.error_message = "Scan task exceeded maximum worker execution deadline"
-        except (asyncio.TimeoutError, TimeoutError):
+            code, msg = classify_worker_exception(exc)
+            job.error_message = f"[{code}] {msg}"
+        except (asyncio.TimeoutError, TimeoutError) as exc:
             logger.warning("Scan %s timed out after %ss", scan_id, global_timeout)
             if job.can_transition_to(ScanStatusEnum.FAILED):
                 job.transition_to(ScanStatusEnum.FAILED)
+            code, _ = classify_worker_exception(exc)
             job.error_message = (
-                f"Scan exceeded maximum wall-clock execution budget of {int(global_timeout)}s"
+                f"[{code}] Scan exceeded maximum wall-clock execution budget of {int(global_timeout)}s"
             )
         except Exception as exc:
             # Catastrophic failure outside the module try/catch
-            logger.exception("Scan %s failed", scan_id)
+            logger.exception("Scan %s failed with unhandled exception", scan_id)
             if job.can_transition_to(ScanStatusEnum.FAILED):
                 job.transition_to(ScanStatusEnum.FAILED)
-            job.error_message = str(exc)
+            code, msg = classify_worker_exception(exc)
+            job.error_message = f"[{code}] {msg}"
 
         # Save the final results to Postgres
         db.commit()
