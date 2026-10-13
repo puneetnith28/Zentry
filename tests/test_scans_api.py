@@ -272,3 +272,56 @@ def test_scan_with_out_of_bounds_timeout_and_redirects(client, db_session):
         },
     )
     assert res_redir.status_code == 422
+
+
+def test_concurrent_active_scan_quota_enforced(client, db_session):
+    user, headers = create_test_user(db_session)
+    with patch("app.api.v1.scans.scan_task.delay"):
+        # Create 3 scans (quota limit)
+        for i in range(3):
+            res = client.post(
+                "/api/v1/scans/",
+                headers=headers,
+                json={"target": f"https://example{i}.com", "options": {}},
+            )
+            assert res.status_code == 202
+
+        # 4th scan attempt exceeds quota
+        res_exceeded = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={"target": "https://example-exceeded.com", "options": {}},
+        )
+        assert res_exceeded.status_code == 429
+        assert "active scan quota exceeded" in res_exceeded.json()["detail"].lower()
+
+
+def test_completed_scans_do_not_count_towards_active_quota(client, db_session):
+    user, headers = create_test_user(db_session)
+    with patch("app.api.v1.scans.scan_task.delay"):
+        # Create 2 pending scans
+        for i in range(2):
+            res = client.post(
+                "/api/v1/scans/",
+                headers=headers,
+                json={"target": f"https://example{i}.com", "options": {}},
+            )
+            assert res.status_code == 202
+
+        # Add 1 completed scan
+        completed_job = ScanJob(
+            user_id=user.id,
+            target_url="https://completed.com",
+            status=ScanStatusEnum.COMPLETED,
+            options={},
+        )
+        db_session.add(completed_job)
+        db_session.commit()
+
+        # Should still be able to submit a 3rd active scan (since only 2 are pending)
+        res_third = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={"target": "https://example-third.com", "options": {}},
+        )
+        assert res_third.status_code == 202

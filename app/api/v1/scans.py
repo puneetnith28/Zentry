@@ -43,6 +43,22 @@ def create_scan(
             detail=str(exc),
         ) from exc
 
+    # Enforce concurrent active scan quota per user
+    if not current_user.is_superuser:
+        active_count = (
+            db.query(ScanJob)
+            .filter(
+                ScanJob.user_id == current_user.id,
+                ScanJob.status.in_([ScanStatusEnum.PENDING, ScanStatusEnum.RUNNING]),
+            )
+            .count()
+        )
+        if active_count >= settings.max_active_scans_per_user:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"Active scan quota exceeded. Maximum {settings.max_active_scans_per_user} concurrent scans allowed.",
+            )
+
     job = ScanJob(
         user_id=current_user.id,
         target_url=normalized,

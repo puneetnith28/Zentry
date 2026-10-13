@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     auth_rate_limit_per_minute: int = 10
     scan_rate_limit_per_minute: int = 20
+    max_active_scans_per_user: int = 3
 
 
 @lru_cache
