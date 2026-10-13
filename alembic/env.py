@@ -11,8 +11,10 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
-settings = get_settings()
-config.set_main_option("sqlalchemy.url", settings.database_url)
+existing_url = config.get_main_option("sqlalchemy.url")
+if not existing_url or existing_url.startswith("driver://"):
+    settings = get_settings()
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 
 def run_migrations_offline() -> None:
