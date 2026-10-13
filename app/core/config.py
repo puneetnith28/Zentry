@@ -16,6 +16,14 @@ class Settings(BaseSettings):
         "http://localhost:5173",
         "http://localhost:8000",
     ]
+    cors_allow_methods: list[str] = ["GET", "POST", "OPTIONS"]
+    cors_allow_headers: list[str] = [
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+    ]
     block_private_targets: bool = True
     outbound_proxy_url: str | None = None
     outbound_trust_env: bool = False
