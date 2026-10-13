@@ -80,6 +80,9 @@ class ScanDetailResponse(BaseModel):
     status: ScanStatusEnum
     created_at: datetime
     updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
     user_id: UUID | None = None
     result: ScanResultPayload | None = None
     error_message: str | None = None
@@ -91,6 +94,9 @@ class ScanSummaryItem(BaseModel):
     status: ScanStatusEnum
     created_at: datetime
     updated_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    duration_seconds: float | None = None
     user_id: UUID | None = None
     summary: FindingSummary | None = None
     error_message: str | None = None

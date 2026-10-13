@@ -350,3 +350,30 @@ def test_queue_depth_under_threshold_accepted(client, db_session):
                 json={"target": "https://example.com", "options": {}},
             )
     assert response.status_code == 202
+
+
+def test_get_scan_returns_timing_metrics(client, db_session):
+    from datetime import datetime, timedelta, timezone
+
+    user, headers = create_test_user(db_session)
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://timed-scan.example.com",
+        status=ScanStatusEnum.PENDING,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    start = datetime(2026, 10, 13, 10, 0, 0, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=8.75)
+    job.transition_to(ScanStatusEnum.RUNNING, timestamp=start)
+    job.transition_to(ScanStatusEnum.COMPLETED, timestamp=end)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/scans/{job.id}", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["started_at"] is not None
+    assert data["finished_at"] is not None
+    assert data["duration_seconds"] == 8.75
+

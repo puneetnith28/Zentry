@@ -24,7 +24,10 @@ def test_migration_revision_chain(alembic_config: Config):
     script = ScriptDirectory.from_config(alembic_config)
     heads = script.get_heads()
     assert len(heads) == 1, "Alembic must have exactly one head revision"
-    assert heads[0] == "003", "Current head revision must be 003"
+    assert heads[0] == "004", "Current head revision must be 004"
+
+    rev_004 = script.get_revision("004")
+    assert rev_004.down_revision == "003"
 
     rev_003 = script.get_revision("003")
     assert rev_003.down_revision == "002"
@@ -83,6 +86,12 @@ def test_migration_fresh_database_upgrade_and_downgrade_cycle(alembic_config: Co
             # Verify performance index exists
             indexes = {idx["name"] for idx in inspector.get_indexes("scan_jobs")}
             assert "ix_scan_jobs_user_id_created_at" in indexes
+
+            # Verify timing metric columns exist
+            columns = {col["name"] for col in inspector.get_columns("scan_jobs")}
+            assert "started_at" in columns
+            assert "finished_at" in columns
+            assert "duration_seconds" in columns
 
         temp_engine.dispose()
 

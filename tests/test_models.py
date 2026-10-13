@@ -162,3 +162,49 @@ def test_scan_job_transition_to_invalid_raises():
             with pytest.raises(InvalidStateTransitionError):
                 t_job.transition_to(target)
 
+
+def test_scan_job_timing_metrics_columns():
+    table = ScanJob.__table__
+    assert "started_at" in table.c
+    assert "finished_at" in table.c
+    assert "duration_seconds" in table.c
+
+
+def test_scan_job_transition_records_timing_metrics():
+    from datetime import datetime, timedelta, timezone
+
+    start = datetime(2026, 10, 13, 12, 0, 0, tzinfo=timezone.utc)
+    end = start + timedelta(seconds=14.35)
+
+    job = ScanJob(target_url="https://example.com", status=ScanStatusEnum.PENDING)
+    assert job.started_at is None
+    assert job.finished_at is None
+    assert job.duration_seconds is None
+
+    # Transition to RUNNING
+    job.transition_to(ScanStatusEnum.RUNNING, timestamp=start)
+    assert job.status == ScanStatusEnum.RUNNING
+    assert job.started_at == start
+    assert job.finished_at is None
+    assert job.duration_seconds is None
+
+    # Transition to COMPLETED
+    job.transition_to(ScanStatusEnum.COMPLETED, timestamp=end)
+    assert job.status == ScanStatusEnum.COMPLETED
+    assert job.started_at == start
+    assert job.finished_at == end
+    assert job.duration_seconds == 14.35
+
+
+def test_scan_job_transition_to_failed_without_started_at():
+    from datetime import datetime, timezone
+
+    failed_time = datetime(2026, 10, 13, 12, 5, 0, tzinfo=timezone.utc)
+    job = ScanJob(target_url="https://example.com", status=ScanStatusEnum.PENDING)
+    job.transition_to(ScanStatusEnum.FAILED, timestamp=failed_time)
+    assert job.status == ScanStatusEnum.FAILED
+    assert job.started_at is None
+    assert job.finished_at == failed_time
+    assert job.duration_seconds is None
+
+

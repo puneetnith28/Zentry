@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Index, String, Text, Uuid
+from sqlalchemy import JSON, Boolean, DateTime, Enum, Float, ForeignKey, Index, String, Text, Uuid
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -113,6 +113,15 @@ class ScanJob(Base):
     options: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_seconds: Mapped[float | None] = mapped_column(
+        Float, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -135,7 +144,26 @@ class ScanJob(Base):
     def can_transition_to(self, new_status: ScanStatusEnum) -> bool:
         return self.status.can_transition_to(new_status)
 
-    def transition_to(self, new_status: ScanStatusEnum) -> None:
+    def transition_to(
+        self,
+        new_status: ScanStatusEnum,
+        timestamp: datetime | None = None,
+    ) -> None:
         if not self.can_transition_to(new_status):
             raise InvalidStateTransitionError(self.status, new_status)
         self.status = new_status
+        now = timestamp or datetime.now(timezone.utc)
+        if new_status == ScanStatusEnum.RUNNING:
+            self.started_at = now
+        elif new_status in ScanStatusEnum.terminal_statuses():
+            self.finished_at = now
+            if self.started_at is not None:
+                start_dt = self.started_at
+                end_dt = self.finished_at
+                if start_dt.tzinfo is None and end_dt.tzinfo is not None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                elif start_dt.tzinfo is not None and end_dt.tzinfo is None:
+                    end_dt = end_dt.replace(tzinfo=timezone.utc)
+                delta = (end_dt - start_dt).total_seconds()
+                self.duration_seconds = round(max(0.0, delta), 2)
+
