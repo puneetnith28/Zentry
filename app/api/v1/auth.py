@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.rate_limit import rate_limit_login
 from app.core.security import (
     create_access_token,
     get_password_hash,
@@ -54,6 +55,7 @@ def register_user(
 @router.post(
     "/login",
     response_model=TokenResponse,
+    dependencies=[Depends(rate_limit_login)],
 )
 def login_user(
     body: UserLogin,

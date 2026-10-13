@@ -25,9 +25,12 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engin
 
 @pytest.fixture(autouse=True)
 def setup_db() -> Generator[None, None, None]:
+    from app.core.rate_limit import limiter
+    limiter.clear()
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
+    limiter.clear()
 
 
 @pytest.fixture

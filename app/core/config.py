@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
     max_request_body_bytes: int = 64 * 1024
+    rate_limit_enabled: bool = True
+    auth_rate_limit_per_minute: int = 10
+    scan_rate_limit_per_minute: int = 20
 
 
 @lru_cache

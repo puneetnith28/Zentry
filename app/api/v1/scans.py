@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
 from app.core.config import get_settings
+from app.core.rate_limit import rate_limit_scans
 from app.core.target_validation import TargetValidationError, validate_scan_target
 from app.db.models import ScanJob, ScanStatusEnum, User
 from app.schemas.scan import (
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/scans", tags=["scans"])
     "/",
     response_model=ScanCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(rate_limit_scans)],
 )
 def create_scan(
     body: ScanCreateRequest,
