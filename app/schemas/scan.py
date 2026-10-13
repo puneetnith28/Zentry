@@ -24,6 +24,7 @@ class ScanCreateRequest(BaseModel):
 class ScanCreateResponse(BaseModel):
     scan_id: UUID
     status: ScanStatusEnum
+    user_id: UUID | None = None
 
 
 class FindingSummary(BaseModel):
@@ -47,5 +48,6 @@ class ScanDetailResponse(BaseModel):
     status: ScanStatusEnum
     created_at: datetime
     updated_at: datetime
+    user_id: UUID | None = None
     result: ScanResultPayload | None = None
     error_message: str | None = None

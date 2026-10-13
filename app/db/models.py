@@ -2,8 +2,8 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Enum, String, Text, Uuid
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, String, Text, Uuid
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -40,6 +40,9 @@ class User(Base):
         nullable=False,
     )
 
+    scans: Mapped[list["ScanJob"]] = relationship(
+        "ScanJob", back_populates="owner", cascade="all, delete-orphan"
+    )
 
 
 class ScanStatusEnum(str, enum.Enum):
@@ -54,6 +57,12 @@ class ScanJob(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     status: Mapped[ScanStatusEnum] = mapped_column(
@@ -75,3 +84,5 @@ class ScanJob(Base):
         onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
+
+    owner: Mapped[User | None] = relationship("User", back_populates="scans")
