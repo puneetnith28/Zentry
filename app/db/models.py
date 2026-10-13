@@ -45,6 +45,17 @@ class User(Base):
     )
 
 
+class InvalidStateTransitionError(ValueError):
+    """Raised when an invalid scan status transition is attempted."""
+
+    def __init__(self, from_status: "ScanStatusEnum", to_status: "ScanStatusEnum") -> None:
+        self.from_status = from_status
+        self.to_status = to_status
+        super().__init__(
+            f"Cannot transition scan job from {from_status.value} to {to_status.value}"
+        )
+
+
 class ScanStatusEnum(str, enum.Enum):
     PENDING = "PENDING"
     RUNNING = "RUNNING"
@@ -59,6 +70,19 @@ class ScanStatusEnum(str, enum.Enum):
     @classmethod
     def active_statuses(cls) -> set["ScanStatusEnum"]:
         return {cls.PENDING, cls.RUNNING}
+
+    @classmethod
+    def valid_transitions(cls) -> dict["ScanStatusEnum", set["ScanStatusEnum"]]:
+        return {
+            cls.PENDING: {cls.RUNNING, cls.FAILED, cls.CANCELLED},
+            cls.RUNNING: {cls.COMPLETED, cls.FAILED, cls.CANCELLED},
+            cls.COMPLETED: set(),
+            cls.FAILED: set(),
+            cls.CANCELLED: set(),
+        }
+
+    def can_transition_to(self, target: "ScanStatusEnum") -> bool:
+        return target in self.valid_transitions().get(self, set())
 
 
 class ScanJob(Base):
@@ -107,3 +131,11 @@ class ScanJob(Base):
     )
 
     owner: Mapped[User | None] = relationship("User", back_populates="scans")
+
+    def can_transition_to(self, new_status: ScanStatusEnum) -> bool:
+        return self.status.can_transition_to(new_status)
+
+    def transition_to(self, new_status: ScanStatusEnum) -> None:
+        if not self.can_transition_to(new_status):
+            raise InvalidStateTransitionError(self.status, new_status)
+        self.status = new_status

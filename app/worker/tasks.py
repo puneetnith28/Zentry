@@ -111,7 +111,7 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
             return
 
         # Mark as running so the frontend shows the progress spinner
-        job.status = ScanStatusEnum.RUNNING
+        job.transition_to(ScanStatusEnum.RUNNING)
         db.commit()
 
         options = job.options or {}
@@ -145,18 +145,20 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
                 "summary": summary,
             }
             job.result_payload = payload
-            job.status = ScanStatusEnum.COMPLETED
+            job.transition_to(ScanStatusEnum.COMPLETED)
             job.error_message = None
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning("Scan %s timed out after %ss", scan_id, global_timeout)
-            job.status = ScanStatusEnum.FAILED
+            if job.can_transition_to(ScanStatusEnum.FAILED):
+                job.transition_to(ScanStatusEnum.FAILED)
             job.error_message = (
                 f"Scan exceeded maximum wall-clock execution budget of {int(global_timeout)}s"
             )
         except Exception as exc:
             # Catastrophic failure outside the module try/catch
             logger.exception("Scan %s failed", scan_id)
-            job.status = ScanStatusEnum.FAILED
+            if job.can_transition_to(ScanStatusEnum.FAILED):
+                job.transition_to(ScanStatusEnum.FAILED)
             job.error_message = str(exc)
 
         # Save the final results to Postgres

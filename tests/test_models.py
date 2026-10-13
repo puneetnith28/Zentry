@@ -106,3 +106,59 @@ def test_scan_job_indexes_defined():
     assert "ix_scan_jobs_created_at" in index_names
     assert "ix_scan_jobs_user_id" in index_names
     assert "ix_scan_jobs_status" in index_names
+
+
+def test_scan_status_state_machine_valid_transitions():
+    valid = ScanStatusEnum.valid_transitions()
+    assert valid[ScanStatusEnum.PENDING] == {
+        ScanStatusEnum.RUNNING,
+        ScanStatusEnum.FAILED,
+        ScanStatusEnum.CANCELLED,
+    }
+    assert valid[ScanStatusEnum.RUNNING] == {
+        ScanStatusEnum.COMPLETED,
+        ScanStatusEnum.FAILED,
+        ScanStatusEnum.CANCELLED,
+    }
+    assert valid[ScanStatusEnum.COMPLETED] == set()
+    assert valid[ScanStatusEnum.FAILED] == set()
+    assert valid[ScanStatusEnum.CANCELLED] == set()
+
+
+def test_scan_job_transition_to_valid():
+    job = ScanJob(target_url="https://example.com", status=ScanStatusEnum.PENDING)
+    assert job.can_transition_to(ScanStatusEnum.RUNNING) is True
+    job.transition_to(ScanStatusEnum.RUNNING)
+    assert job.status == ScanStatusEnum.RUNNING
+
+    assert job.can_transition_to(ScanStatusEnum.COMPLETED) is True
+    job.transition_to(ScanStatusEnum.COMPLETED)
+    assert job.status == ScanStatusEnum.COMPLETED
+
+
+def test_scan_job_transition_to_invalid_raises():
+    import pytest
+    from app.db.models import InvalidStateTransitionError
+
+    job = ScanJob(target_url="https://example.com", status=ScanStatusEnum.COMPLETED)
+    assert job.can_transition_to(ScanStatusEnum.RUNNING) is False
+    with pytest.raises(InvalidStateTransitionError) as exc_info:
+        job.transition_to(ScanStatusEnum.RUNNING)
+    assert "Cannot transition scan job from COMPLETED to RUNNING" in str(exc_info.value)
+    assert exc_info.value.from_status == ScanStatusEnum.COMPLETED
+    assert exc_info.value.to_status == ScanStatusEnum.RUNNING
+
+    # Cannot transition from PENDING directly to COMPLETED
+    pending_job = ScanJob(target_url="https://example.com", status=ScanStatusEnum.PENDING)
+    assert pending_job.can_transition_to(ScanStatusEnum.COMPLETED) is False
+    with pytest.raises(InvalidStateTransitionError):
+        pending_job.transition_to(ScanStatusEnum.COMPLETED)
+
+    # Terminal states cannot transition to anything
+    for term in ScanStatusEnum.terminal_statuses():
+        t_job = ScanJob(target_url="https://example.com", status=term)
+        for target in ScanStatusEnum:
+            assert t_job.can_transition_to(target) is False
+            with pytest.raises(InvalidStateTransitionError):
+                t_job.transition_to(target)
+
