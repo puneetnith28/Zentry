@@ -36,6 +36,11 @@ class MaxRedirectsExceededError(ValueError):
     pass
 
 
+class ProhibitedProxyError(ProhibitedDestinationError):
+    """Raised when an explicit outbound proxy configuration targets a prohibited destination or protocol."""
+    pass
+
+
 # Comprehensive IPv4 prohibited ranges (RFC 1918, 1122, 3927, 5771, 6598, etc.)
 PROHIBITED_IPV4_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
     ipaddress.ip_network("0.0.0.0/8"),          # Current network / "this host"
@@ -247,14 +252,57 @@ class SafeAsyncHTTPTransport(httpx.AsyncHTTPTransport):
             self._pool._network_backend = PinnedNetworkBackend(orig_backend)
 
 
+def validate_proxy_url(proxy_url: str) -> None:
+    """Validate that an explicit proxy URL uses safe protocols and resolves to allowed public IP destinations."""
+    parsed = urlparse(proxy_url)
+    if parsed.scheme not in ("http", "https"):
+        raise ProhibitedProxyError(
+            f"Unsupported proxy scheme '{parsed.scheme}'; only http and https are allowed."
+        )
+    if not parsed.hostname:
+        raise ProhibitedProxyError(f"Missing proxy hostname in URL: {proxy_url}")
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port or default_port
+    resolve_public_target(parsed.hostname, port)
+
+
 def create_safe_async_client(
     timeout: float = 10.0,
     *,
     follow_redirects: bool = False,
     trust_env: bool = False,
+    proxy: str | None = None,
     **kwargs,
 ) -> httpx.AsyncClient:
-    """Create an httpx.AsyncClient configured with SafeAsyncHTTPTransport."""
+    """
+    Create an httpx.AsyncClient configured with SafeAsyncHTTPTransport.
+
+    By default, trust_env=False suppresses ambient environment proxy variables
+    (such as HTTP_PROXY, HTTPS_PROXY, ALL_PROXY) to prevent unvetted traffic routing.
+    If an explicit proxy is configured or passed, its destination is strictly validated.
+    """
+    if proxy is None:
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            proxy = settings.outbound_proxy_url
+            if trust_env is False and settings.outbound_trust_env:
+                trust_env = settings.outbound_trust_env
+        except Exception:
+            proxy = None
+
+    if proxy is not None:
+        validate_proxy_url(proxy)
+        transport = SafeAsyncHTTPTransport(proxy=proxy, trust_env=trust_env)
+        return httpx.AsyncClient(
+            transport=transport,
+            timeout=timeout,
+            follow_redirects=follow_redirects,
+            trust_env=trust_env,
+            proxy=proxy,
+            **kwargs,
+        )
+
     transport = SafeAsyncHTTPTransport(trust_env=trust_env)
     return httpx.AsyncClient(
         transport=transport,

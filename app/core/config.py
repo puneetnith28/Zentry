@@ -17,6 +17,8 @@ class Settings(BaseSettings):
         "http://localhost:8000",
     ]
     block_private_targets: bool = True
+    outbound_proxy_url: str | None = None
+    outbound_trust_env: bool = False
 
 
 @lru_cache

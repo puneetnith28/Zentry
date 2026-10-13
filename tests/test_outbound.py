@@ -245,3 +245,59 @@ async def test_safe_request_successful_public_redirect(monkeypatch):
         res = await safe_request("GET", "http://example.com/", client=client)
         assert res.status_code == 200
         assert res.text == "Destination reached successfully"
+
+
+def test_validate_proxy_url_rejects_unsupported_scheme():
+    from app.core.outbound import validate_proxy_url, ProhibitedProxyError
+
+    with pytest.raises(ProhibitedProxyError) as exc:
+        validate_proxy_url("socks5://proxy.example.com:1080")
+    assert "Unsupported proxy scheme 'socks5'" in str(exc.value)
+
+
+def test_validate_proxy_url_rejects_private_and_metadata_ip():
+    from app.core.outbound import validate_proxy_url, ProhibitedDestinationError
+
+    for bad_proxy in (
+        "http://127.0.0.1:8080",
+        "http://10.0.0.5:3128",
+        "http://169.254.169.254:8080",
+        "http://[::1]:8080",
+    ):
+        with pytest.raises(ProhibitedDestinationError):
+            validate_proxy_url(bad_proxy)
+
+
+def test_validate_proxy_url_allows_public_target(monkeypatch):
+    from app.core.outbound import validate_proxy_url
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 8080))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+    # Should not raise
+    validate_proxy_url("http://corporate-proxy.example.com:8080")
+
+
+@pytest.mark.asyncio
+async def test_create_safe_client_suppresses_environment_proxy(monkeypatch):
+    import os
+    from app.core.outbound import create_safe_async_client
+
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:8888")
+    monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:8888")
+
+    client = create_safe_async_client()
+    try:
+        assert client._transport._pool is not None
+        # Verify ambient environment proxies did not create proxy mounts
+        assert len(client._mounts) == 0
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_safe_client_rejects_private_proxy():
+    from app.core.outbound import create_safe_async_client, ProhibitedDestinationError
+
+    with pytest.raises(ProhibitedDestinationError):
+        create_safe_async_client(proxy="http://10.0.0.1:8080")
