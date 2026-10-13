@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     auth_rate_limit_per_minute: int = 10
     scan_rate_limit_per_minute: int = 20
     max_active_scans_per_user: int = 3
+    global_scan_timeout_seconds: float = 180.0
+    module_scan_timeout_seconds: float = 60.0
 
 
 @lru_cache

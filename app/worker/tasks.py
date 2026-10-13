@@ -6,7 +6,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from app.core.celery_app import celery_app
+from app.core.config import get_settings
 from app.db.models import ScanJob, ScanStatusEnum
 from app.db.session import SessionLocal
 from app.services.common import summarize_findings
@@ -23,6 +26,12 @@ def _module_result_to_dict(result: Any) -> dict[str, Any]:
     """Helper to ensure we always return a standardized dictionary format, even on failure."""
     if isinstance(result, dict):
         return result
+    if isinstance(result, (asyncio.TimeoutError, TimeoutError)):
+        return {
+            "status": "error",
+            "error": {"code": "MODULE_TIMEOUT", "message": "Module execution timed out"},
+            "findings": [],
+        }
     if isinstance(result, BaseException):
         # We caught an unhandled exception during the async scan module
         return {
@@ -34,8 +43,12 @@ def _module_result_to_dict(result: Any) -> dict[str, Any]:
     return {"status": "error", "error": {"code": "UNKNOWN", "message": "Unknown result"}}
 
 
-async def _run_scan_modules(target: str, options: dict[str, Any]) -> dict[str, Any]:
-    """Dynamically construct and execute the scan tasks based on user options."""
+async def _run_scan_modules(
+    target: str,
+    options: dict[str, Any],
+    module_timeout: float,
+) -> dict[str, Any]:
+    """Dynamically construct and execute the scan tasks with per-module timeout bounds."""
     modules: dict[str, Any] = {}
     tasks: list[tuple[str, Any]] = []
 
@@ -56,9 +69,9 @@ async def _run_scan_modules(target: str, options: dict[str, Any]) -> dict[str, A
         # User deselected everything, nothing to do
         return modules
 
-    # Run everything concurrently for maximum speed
+    # Run each module with bounded timeout and gather concurrently
     results = await asyncio.gather(
-        *[coro for _, coro in tasks],
+        *[asyncio.wait_for(coro, timeout=module_timeout) for _, coro in tasks],
         return_exceptions=True,
     )
 
@@ -69,10 +82,27 @@ async def _run_scan_modules(target: str, options: dict[str, Any]) -> dict[str, A
     return modules
 
 
+async def _execute_scan_with_deadline(
+    target: str,
+    options: dict[str, Any],
+    global_timeout: float,
+    module_timeout: float,
+) -> dict[str, Any]:
+    """Execute scan modules subject to global wall-clock deadline."""
+    return await asyncio.wait_for(
+        _run_scan_modules(target, options, module_timeout),
+        timeout=global_timeout,
+    )
+
+
 @celery_app.task(name="app.worker.tasks.scan_task", bind=True, max_retries=0)
-def scan_task(self, scan_id: str) -> None:
+def scan_task(self, scan_id: str, db: Session | None = None) -> None:
     """The main background worker process triggered when a new scan is created."""
-    db = SessionLocal()
+    settings = get_settings()
+    own_session = False
+    if db is None:
+        db = SessionLocal()
+        own_session = True
     try:
         # Look up the scan job from the database
         job = db.get(ScanJob, uuid.UUID(scan_id))
@@ -85,13 +115,28 @@ def scan_task(self, scan_id: str) -> None:
         db.commit()
 
         options = job.options or {}
+        user_timeout = options.get("timeout")
+        global_timeout = (
+            float(user_timeout)
+            if user_timeout is not None
+            else settings.global_scan_timeout_seconds
+        )
+        module_timeout = min(settings.module_scan_timeout_seconds, global_timeout)
+
         try:
-            # Fire off the scan modules asynchronously
-            modules = asyncio.run(_run_scan_modules(job.target_url, options))
-            
+            # Fire off the scan modules asynchronously subject to global wall-clock deadline
+            modules = asyncio.run(
+                _execute_scan_with_deadline(
+                    job.target_url,
+                    options,
+                    global_timeout=global_timeout,
+                    module_timeout=module_timeout,
+                )
+            )
+
             # Tally up the final score (critical, high, medium, etc.)
             summary = summarize_findings(modules)
-            
+
             # Format the final JSON response for the database
             payload = {
                 "target": job.target_url,
@@ -102,8 +147,14 @@ def scan_task(self, scan_id: str) -> None:
             job.result_payload = payload
             job.status = ScanStatusEnum.COMPLETED
             job.error_message = None
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("Scan %s timed out after %ss", scan_id, global_timeout)
+            job.status = ScanStatusEnum.FAILED
+            job.error_message = (
+                f"Scan exceeded maximum wall-clock execution budget of {int(global_timeout)}s"
+            )
         except Exception as exc:
-            # Uh oh, something catastrophic failed outside the module try/catch
+            # Catastrophic failure outside the module try/catch
             logger.exception("Scan %s failed", scan_id)
             job.status = ScanStatusEnum.FAILED
             job.error_message = str(exc)
@@ -111,5 +162,6 @@ def scan_task(self, scan_id: str) -> None:
         # Save the final results to Postgres
         db.commit()
     finally:
-        # Always clean up the database connection
-        db.close()
+        # Always clean up the database connection if created here
+        if own_session:
+            db.close()
