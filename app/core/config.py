@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     max_active_scans_per_user: int = 3
     global_scan_timeout_seconds: float = 180.0
     module_scan_timeout_seconds: float = 60.0
+    max_queue_depth: int = 100
 
 
 @lru_cache

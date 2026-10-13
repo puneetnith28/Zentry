@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
+from app.core.celery_app import get_queue_depth
 from app.core.config import get_settings
 from app.core.rate_limit import rate_limit_scans
 from app.core.target_validation import TargetValidationError, validate_scan_target
@@ -32,6 +33,15 @@ def create_scan(
     db: Session = Depends(get_db),
 ) -> ScanCreateResponse:
     settings = get_settings()
+
+    # Check broker queue depth for backpressure protection
+    current_depth = get_queue_depth()
+    if current_depth >= settings.max_queue_depth:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="System is currently experiencing high load. Please try again shortly.",
+            headers={"Retry-After": "30"},
+        )
     target_str = str(body.target)
     try:
         normalized = validate_scan_target(

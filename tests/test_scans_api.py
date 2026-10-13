@@ -325,3 +325,28 @@ def test_completed_scans_do_not_count_towards_active_quota(client, db_session):
             json={"target": "https://example-third.com", "options": {}},
         )
         assert res_third.status_code == 202
+
+
+def test_queue_depth_backpressure_returns_503(client, db_session):
+    _, headers = create_test_user(db_session)
+    with patch("app.api.v1.scans.get_queue_depth", return_value=150):
+        response = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={"target": "https://example.com", "options": {}},
+        )
+    assert response.status_code == 503
+    assert "high load" in response.json()["detail"].lower()
+    assert response.headers.get("retry-after") == "30"
+
+
+def test_queue_depth_under_threshold_accepted(client, db_session):
+    _, headers = create_test_user(db_session)
+    with patch("app.api.v1.scans.get_queue_depth", return_value=10):
+        with patch("app.api.v1.scans.scan_task.delay"):
+            response = client.post(
+                "/api/v1/scans/",
+                headers=headers,
+                json={"target": "https://example.com", "options": {}},
+            )
+    assert response.status_code == 202
