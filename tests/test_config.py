@@ -16,6 +16,10 @@ def test_settings_defaults():
     assert settings.module_scan_timeout_seconds == 60.0
     assert settings.max_queue_depth == 100
     assert settings.jwt_algorithm == "HS256"
+    assert settings.db_pool_size == 10
+    assert settings.db_max_overflow == 20
+    assert settings.db_pool_timeout == 30.0
+    assert settings.db_pool_recycle_seconds == 1800
 
 
 def test_settings_environment_variable_overrides(monkeypatch):
@@ -26,6 +30,10 @@ def test_settings_environment_variable_overrides(monkeypatch):
     monkeypatch.setenv("GLOBAL_SCAN_TIMEOUT_SECONDS", "300.0")
     monkeypatch.setenv("MODULE_SCAN_TIMEOUT_SECONDS", "90.0")
     monkeypatch.setenv("MAX_QUEUE_DEPTH", "250")
+    monkeypatch.setenv("DB_POOL_SIZE", "15")
+    monkeypatch.setenv("DB_MAX_OVERFLOW", "30")
+    monkeypatch.setenv("DB_POOL_TIMEOUT", "45.0")
+    monkeypatch.setenv("DB_POOL_RECYCLE_SECONDS", "3600")
 
     settings = Settings()
     assert settings.max_request_body_bytes == 131072
@@ -35,6 +43,10 @@ def test_settings_environment_variable_overrides(monkeypatch):
     assert settings.global_scan_timeout_seconds == 300.0
     assert settings.module_scan_timeout_seconds == 90.0
     assert settings.max_queue_depth == 250
+    assert settings.db_pool_size == 15
+    assert settings.db_max_overflow == 30
+    assert settings.db_pool_timeout == 45.0
+    assert settings.db_pool_recycle_seconds == 3600
 
 
 def test_env_example_matches_settings():
@@ -45,6 +57,10 @@ def test_env_example_matches_settings():
     required_keys = [
         "DATABASE_URL",
         "CELERY_BROKER_URL",
+        "DB_POOL_SIZE",
+        "DB_MAX_OVERFLOW",
+        "DB_POOL_TIMEOUT",
+        "DB_POOL_RECYCLE_SECONDS",
         "JWT_SECRET_KEY",
         "JWT_ALGORITHM",
         "ACCESS_TOKEN_EXPIRE_MINUTES",

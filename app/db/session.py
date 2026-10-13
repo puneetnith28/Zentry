@@ -10,7 +10,28 @@ from app.db.models import Base
 
 settings = get_settings()
 
-engine = create_engine(settings.database_url, pool_pre_ping=True)
+
+def create_app_engine(database_url: str | None = None, current_settings=None):
+    """Create SQLAlchemy engine with robust connection pooling and keepalive settings."""
+    if current_settings is None:
+        current_settings = get_settings()
+    url = database_url or current_settings.database_url
+    engine_kwargs: dict = {
+        "pool_pre_ping": True,
+    }
+    if not url.startswith("sqlite"):
+        engine_kwargs.update(
+            {
+                "pool_size": current_settings.db_pool_size,
+                "max_overflow": current_settings.db_max_overflow,
+                "pool_timeout": current_settings.db_pool_timeout,
+                "pool_recycle": current_settings.db_pool_recycle_seconds,
+            }
+        )
+    return create_engine(url, **engine_kwargs)
+
+
+engine = create_app_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

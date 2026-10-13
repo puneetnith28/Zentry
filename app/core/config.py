@@ -99,6 +99,28 @@ class Settings(BaseSettings):
         default=100,
         description="Maximum Celery queue depth threshold before rejecting submissions with 503 backpressure.",
     )
+    db_pool_size: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Database connection pool size.",
+    )
+    db_max_overflow: int = Field(
+        default=20,
+        ge=0,
+        le=100,
+        description="Maximum overflow connections allowed beyond db_pool_size.",
+    )
+    db_pool_timeout: float = Field(
+        default=30.0,
+        ge=1.0,
+        description="Seconds to wait before timing out on connection checkout from pool.",
+    )
+    db_pool_recycle_seconds: int = Field(
+        default=1800,
+        ge=60,
+        description="Recycle connections after this duration in seconds to prevent stale TCP sockets.",
+    )
 
 
 @lru_cache
