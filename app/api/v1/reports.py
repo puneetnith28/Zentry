@@ -4,9 +4,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db
-from app.core.security import verify_api_key
-from app.db.models import ScanJob, ScanStatusEnum
+from app.api.dependencies import get_current_user, get_db
+from app.db.models import ScanJob, ScanStatusEnum, User
 from app.services.pdf_generator import generate_pdf
 
 router = APIRouter(prefix="/reports", tags=["reports"])
@@ -14,12 +13,15 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 @router.get(
     "/{scan_id}/pdf",
-    dependencies=[Depends(verify_api_key)],
     response_class=Response,
 )
-def get_scan_pdf(scan_id: UUID, db: Session = Depends(get_db)) -> Response:
+def get_scan_pdf(
+    scan_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
     job = db.get(ScanJob, scan_id)
-    if job is None:
+    if job is None or (job.user_id != current_user.id and not current_user.is_superuser):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Scan not found",
