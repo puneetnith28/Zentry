@@ -30,6 +30,20 @@ router = APIRouter(prefix="/scans", tags=["scans"])
 def list_scans(
     page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
     page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    status_filter: ScanStatusEnum | None = Query(
+        default=None, alias="status", description="Filter scans by status"
+    ),
+    target_search: str | None = Query(
+        default=None,
+        alias="target",
+        max_length=255,
+        description="Search by target URL substring",
+    ),
+    sort_order: str = Query(
+        default="desc",
+        pattern="^(asc|desc)$",
+        description="Sort order by creation time",
+    ),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PaginatedScanHistoryResponse:
@@ -37,14 +51,25 @@ def list_scans(
     if not current_user.is_superuser:
         query = query.filter(ScanJob.user_id == current_user.id)
 
+    if status_filter is not None:
+        query = query.filter(ScanJob.status == status_filter)
+
+    if target_search:
+        clean_target = target_search.strip()
+        if clean_target:
+            query = query.filter(
+                ScanJob.target_url.contains(clean_target, autoescape=True)
+            )
+
     total = query.count()
     offset = (page - 1) * page_size
-    jobs = (
-        query.order_by(ScanJob.created_at.desc())
-        .offset(offset)
-        .limit(page_size)
-        .all()
-    )
+
+    if sort_order == "asc":
+        query = query.order_by(ScanJob.created_at.asc())
+    else:
+        query = query.order_by(ScanJob.created_at.desc())
+
+    jobs = query.offset(offset).limit(page_size).all()
 
     items: list[ScanSummaryItem] = []
     for job in jobs:

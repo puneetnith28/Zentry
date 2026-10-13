@@ -147,3 +147,73 @@ def test_superuser_sees_all_scans_in_history(client, db_session):
     targets = {item["target_url"] for item in data["items"]}
     assert "https://u1.example.com" in targets
     assert "https://u2.example.com" in targets
+
+
+def test_history_filtering_by_status(client, db_session):
+    user, headers = create_user(db_session, "filter_user")
+    j_pending = ScanJob(target_url="https://pending.example.com", status=ScanStatusEnum.PENDING, user_id=user.id)
+    j_completed = ScanJob(target_url="https://completed.example.com", status=ScanStatusEnum.COMPLETED, user_id=user.id)
+    j_failed = ScanJob(target_url="https://failed.example.com", status=ScanStatusEnum.FAILED, user_id=user.id)
+    db_session.add_all([j_pending, j_completed, j_failed])
+    db_session.commit()
+
+    # Filter COMPLETED
+    res_comp = client.get("/api/v1/scans/?status=COMPLETED", headers=headers)
+    assert res_comp.status_code == 200
+    comp_data = res_comp.json()
+    assert comp_data["total"] == 1
+    assert comp_data["items"][0]["status"] == "COMPLETED"
+    assert comp_data["items"][0]["target_url"] == "https://completed.example.com"
+
+    # Filter FAILED
+    res_fail = client.get("/api/v1/scans/?status=FAILED", headers=headers)
+    assert res_fail.status_code == 200
+    assert res_fail.json()["total"] == 1
+    assert res_fail.json()["items"][0]["status"] == "FAILED"
+
+
+def test_history_searching_by_target_substring(client, db_session):
+    user, headers = create_user(db_session, "search_user")
+    j1 = ScanJob(target_url="https://alpha.acme.com", status=ScanStatusEnum.COMPLETED, user_id=user.id)
+    j2 = ScanJob(target_url="https://beta.acme.com", status=ScanStatusEnum.COMPLETED, user_id=user.id)
+    j3 = ScanJob(target_url="https://corp.otherdomain.com", status=ScanStatusEnum.COMPLETED, user_id=user.id)
+    db_session.add_all([j1, j2, j3])
+    db_session.commit()
+
+    # Search for "acme"
+    res_acme = client.get("/api/v1/scans/?target=acme", headers=headers)
+    assert res_acme.status_code == 200
+    acme_data = res_acme.json()
+    assert acme_data["total"] == 2
+    for item in acme_data["items"]:
+        assert "acme" in item["target_url"]
+
+    # Search for "otherdomain"
+    res_other = client.get("/api/v1/scans/?target=otherdomain", headers=headers)
+    assert res_other.status_code == 200
+    assert res_other.json()["total"] == 1
+
+
+def test_history_sorting_order(client, db_session):
+    user, headers = create_user(db_session, "sort_user")
+    now = datetime.now(timezone.utc)
+    j_old = ScanJob(target_url="https://old.example.com", status=ScanStatusEnum.COMPLETED, user_id=user.id, created_at=now - timedelta(hours=5))
+    j_new = ScanJob(target_url="https://new.example.com", status=ScanStatusEnum.COMPLETED, user_id=user.id, created_at=now)
+    db_session.add_all([j_old, j_new])
+    db_session.commit()
+
+    # Ascending order
+    res_asc = client.get("/api/v1/scans/?sort_order=asc", headers=headers)
+    assert res_asc.status_code == 200
+    assert res_asc.json()["items"][0]["target_url"] == "https://old.example.com"
+    assert res_asc.json()["items"][1]["target_url"] == "https://new.example.com"
+
+    # Descending order (default)
+    res_desc = client.get("/api/v1/scans/?sort_order=desc", headers=headers)
+    assert res_desc.status_code == 200
+    assert res_desc.json()["items"][0]["target_url"] == "https://new.example.com"
+    assert res_desc.json()["items"][1]["target_url"] == "https://old.example.com"
+
+    # Invalid sort order
+    res_bad = client.get("/api/v1/scans/?sort_order=invalid", headers=headers)
+    assert res_bad.status_code == 422
