@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.v1 import auth, reports, scans
 from app.core.config import get_settings
@@ -23,6 +23,35 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def limit_request_body_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            length = int(content_length)
+            if length > settings.max_request_body_bytes:
+                return JSONResponse(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    content={
+                        "detail": f"Request payload exceeds maximum allowed size of {settings.max_request_body_bytes} bytes."
+                    },
+                )
+        except ValueError:
+            pass
+
+    if request.method in ("POST", "PUT", "PATCH"):
+        body = await request.body()
+        if len(body) > settings.max_request_body_bytes:
+            return JSONResponse(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                content={
+                    "detail": f"Request payload exceeds maximum allowed size of {settings.max_request_body_bytes} bytes."
+                },
+            )
+
+    return await call_next(request)
 
 
 @app.middleware("http")
