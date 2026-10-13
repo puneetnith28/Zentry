@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.orm import Session
 
 from app.core.celery_app import celery_app
@@ -95,7 +96,13 @@ async def _execute_scan_with_deadline(
     )
 
 
-@celery_app.task(name="app.worker.tasks.scan_task", bind=True, max_retries=0)
+@celery_app.task(
+    name="app.worker.tasks.scan_task",
+    bind=True,
+    max_retries=0,
+    time_limit=300,
+    soft_time_limit=270,
+)
 def scan_task(self, scan_id: str, db: Session | None = None) -> None:
     """The main background worker process triggered when a new scan is created."""
     settings = get_settings()
@@ -147,6 +154,11 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
             job.result_payload = payload
             job.transition_to(ScanStatusEnum.COMPLETED)
             job.error_message = None
+        except SoftTimeLimitExceeded:
+            logger.warning("Scan %s exceeded Celery soft time limit (270s)", scan_id)
+            if job.can_transition_to(ScanStatusEnum.FAILED):
+                job.transition_to(ScanStatusEnum.FAILED)
+            job.error_message = "Scan task exceeded maximum worker execution deadline"
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning("Scan %s timed out after %ss", scan_id, global_timeout)
             if job.can_transition_to(ScanStatusEnum.FAILED):
