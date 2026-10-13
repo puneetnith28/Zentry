@@ -301,3 +301,101 @@ async def test_create_safe_client_rejects_private_proxy():
 
     with pytest.raises(ProhibitedDestinationError):
         create_safe_async_client(proxy="http://10.0.0.1:8080")
+
+
+def test_default_timeout_configuration():
+    from app.core.outbound import (
+        get_default_timeout,
+        DEFAULT_CONNECT_TIMEOUT,
+        DEFAULT_READ_TIMEOUT,
+        DEFAULT_WRITE_TIMEOUT,
+        DEFAULT_POOL_TIMEOUT,
+    )
+    timeout = get_default_timeout()
+    assert timeout.connect == DEFAULT_CONNECT_TIMEOUT
+    assert timeout.read == DEFAULT_READ_TIMEOUT
+    assert timeout.write == DEFAULT_WRITE_TIMEOUT
+    assert timeout.pool == DEFAULT_POOL_TIMEOUT
+
+
+@pytest.mark.asyncio
+async def test_safe_request_enforces_content_length_limit():
+    import httpx
+    from app.core.outbound import safe_request, ResponseBodyTooLargeError
+
+    async def mock_handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            headers={"content-length": "2000000"},
+            text="large response placeholder",
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ResponseBodyTooLargeError) as exc:
+            await safe_request(
+                "GET",
+                "http://example.com/huge",
+                client=client,
+                max_response_bytes=1000,
+            )
+        assert "Content-Length" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_request_enforces_body_size_limit():
+    import httpx
+    from app.core.outbound import safe_request, ResponseBodyTooLargeError
+
+    async def mock_handler(request: httpx.Request):
+        res = httpx.Response(200, text="A" * 5000)
+        del res.headers["content-length"]
+        return res
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        with pytest.raises(ResponseBodyTooLargeError) as exc:
+            await safe_request(
+                "GET",
+                "http://example.com/body",
+                client=client,
+                max_response_bytes=1000,
+            )
+        assert "Response body" in str(exc.value)
+
+
+
+@pytest.mark.asyncio
+async def test_safe_request_within_body_size_limit():
+    import httpx
+    from app.core.outbound import safe_request
+
+    async def mock_handler(request: httpx.Request):
+        return httpx.Response(200, text="small body")
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        res = await safe_request(
+            "GET",
+            "http://example.com/ok",
+            client=client,
+            max_response_bytes=1000,
+        )
+        assert res.status_code == 200
+        assert res.text == "small body"
+
+
+@pytest.mark.asyncio
+async def test_read_bounded_response_stream():
+    import httpx
+    from app.core.outbound import read_bounded_response_stream, ResponseBodyTooLargeError
+
+    # Test small stream
+    res_ok = httpx.Response(200, content=b"1234567890")
+    data = await read_bounded_response_stream(res_ok, max_bytes=20)
+    assert data == b"1234567890"
+
+    # Test stream exceeding limit
+    res_large = httpx.Response(200, content=b"A" * 100)
+    with pytest.raises(ResponseBodyTooLargeError):
+        await read_bounded_response_stream(res_large, max_bytes=50, chunk_size=10)

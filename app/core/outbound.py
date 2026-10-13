@@ -41,6 +41,24 @@ class ProhibitedProxyError(ProhibitedDestinationError):
     pass
 
 
+class ResponseBodyTooLargeError(ValueError):
+    """Raised when an HTTP response body exceeds configured byte budget."""
+    pass
+
+
+# Centralized timeout constants (in seconds)
+DEFAULT_CONNECT_TIMEOUT: Final[float] = 5.0
+DEFAULT_READ_TIMEOUT: Final[float] = 10.0
+DEFAULT_WRITE_TIMEOUT: Final[float] = 5.0
+DEFAULT_POOL_TIMEOUT: Final[float] = 5.0
+DEFAULT_REQUEST_TIMEOUT: Final[float] = 10.0
+
+# Centralized response body size caps (in bytes)
+DEFAULT_MAX_RESPONSE_BYTES: Final[int] = 1024 * 1024        # 1 MB
+DEFAULT_TECH_MAX_RESPONSE_BYTES: Final[int] = 256 * 1024    # 256 KB
+DEFAULT_HEADERS_MAX_RESPONSE_BYTES: Final[int] = 64 * 1024  # 64 KB
+
+
 # Comprehensive IPv4 prohibited ranges (RFC 1918, 1122, 3927, 5771, 6598, etc.)
 PROHIBITED_IPV4_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
     ipaddress.ip_network("0.0.0.0/8"),          # Current network / "this host"
@@ -266,8 +284,46 @@ def validate_proxy_url(proxy_url: str) -> None:
     resolve_public_target(parsed.hostname, port)
 
 
+def get_default_timeout(
+    connect: float = DEFAULT_CONNECT_TIMEOUT,
+    read: float = DEFAULT_READ_TIMEOUT,
+    write: float = DEFAULT_WRITE_TIMEOUT,
+    pool: float = DEFAULT_POOL_TIMEOUT,
+) -> httpx.Timeout:
+    """Return standardized httpx.Timeout with bounded connection, read, write, and pool durations."""
+    return httpx.Timeout(
+        connect=connect,
+        read=read,
+        write=write,
+        pool=pool,
+    )
+
+
+async def read_bounded_response_stream(
+    response: httpx.Response,
+    max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    chunk_size: int = 8192,
+) -> bytes:
+    """Stream response content safely up to max_bytes, aborting if exceeded."""
+    cl_header = response.headers.get("content-length")
+    if cl_header and cl_header.strip().isdigit():
+        if int(cl_header.strip()) > max_bytes:
+            raise ResponseBodyTooLargeError(
+                f"Response Content-Length {cl_header} exceeds limit of {max_bytes} bytes"
+            )
+
+    body = bytearray()
+    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise ResponseBodyTooLargeError(
+                f"Response stream exceeded limit of {max_bytes} bytes"
+            )
+    return bytes(body)
+
+
 def create_safe_async_client(
-    timeout: float = 10.0,
+    timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
     *,
     follow_redirects: bool = False,
     trust_env: bool = False,
@@ -319,7 +375,8 @@ async def safe_request(
     *,
     client: httpx.AsyncClient | None = None,
     max_redirects: int = 5,
-    timeout: float = 10.0,
+    timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
+    max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
     **kwargs,
 ) -> httpx.Response:
     """
@@ -382,6 +439,18 @@ async def safe_request(
                 if response.status_code == 303:
                     method = "GET"
                 continue
+
+            if max_response_bytes is not None:
+                cl_header = response.headers.get("content-length")
+                if cl_header and cl_header.strip().isdigit():
+                    if int(cl_header.strip()) > max_response_bytes:
+                        raise ResponseBodyTooLargeError(
+                            f"Response Content-Length {cl_header} exceeds limit of {max_response_bytes} bytes"
+                        )
+                if len(response.content) > max_response_bytes:
+                    raise ResponseBodyTooLargeError(
+                        f"Response body ({len(response.content)} bytes) exceeds limit of {max_response_bytes} bytes"
+                    )
 
             return response
     finally:
