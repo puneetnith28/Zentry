@@ -20,5 +20,6 @@ htmlcov/
 *.sqlite3
 
 # Local Development Plan & Scripts (Internal)
-plan.md
-local_git_helper.py
+/plan.md
+/IMPLEMENTATION.md
+/local_git_helper.py
