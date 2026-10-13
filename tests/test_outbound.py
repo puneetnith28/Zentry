@@ -1,7 +1,9 @@
 import pytest
 from app.core.outbound import (
+    DNSResolutionError,
     ProhibitedDestinationError,
     is_prohibited_ip,
+    resolve_public_target,
     validate_ip_destination,
 )
 
@@ -79,3 +81,68 @@ def test_invalid_ip_representation_rejected():
     assert is_prohibited_ip("not-an-ip")
     with pytest.raises(ProhibitedDestinationError):
         validate_ip_destination("not-an-ip")
+
+
+def test_resolve_public_target_ip_literal():
+    ips = resolve_public_target("93.184.216.34")
+    assert len(ips) == 1
+    assert str(ips[0]) == "93.184.216.34"
+
+    with pytest.raises(ProhibitedDestinationError):
+        resolve_public_target("127.0.0.1")
+
+
+def test_resolve_public_target_success(monkeypatch):
+    fake_addrinfo = [
+        (2, 1, 6, "", ("93.184.216.34", 443)),
+        (10, 1, 6, "", ("2606:2800:220:1:248:1893:25c8:1946", 443)),
+    ]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    ips = resolve_public_target("example.com", 443)
+    assert len(ips) == 2
+    assert str(ips[0]) == "93.184.216.34"
+    assert str(ips[1]) == "2606:2800:220:1:248:1893:25c8:1946"
+
+
+def test_resolve_public_target_private_blocked(monkeypatch):
+    fake_addrinfo = [
+        (2, 1, 6, "", ("10.0.0.1", 443)),
+    ]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    with pytest.raises(ProhibitedDestinationError) as exc:
+        resolve_public_target("internal.corp", 443)
+    assert "resolves to prohibited address" in str(exc.value)
+
+
+def test_resolve_public_target_mixed_answers_blocked(monkeypatch):
+    """If DNS returns both public and private addresses, the target MUST be rejected."""
+    fake_addrinfo = [
+        (2, 1, 6, "", ("93.184.216.34", 443)),
+        (2, 1, 6, "", ("192.168.1.1", 443)),
+    ]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    with pytest.raises(ProhibitedDestinationError) as exc:
+        resolve_public_target("rebinding-test.com", 443)
+    assert "resolves to prohibited address: 192.168.1.1" in str(exc.value)
+
+
+def test_resolve_public_target_gaierror(monkeypatch):
+    def fake_gaierror(*args, **kwargs):
+        import socket
+        raise socket.gaierror("Name or service not known")
+
+    monkeypatch.setattr("socket.getaddrinfo", fake_gaierror)
+
+    from app.core.outbound import DNSResolutionError
+    with pytest.raises(DNSResolutionError) as exc:
+        resolve_public_target("nonexistent.invalid", 80)
+    assert "Unable to resolve hostname" in str(exc.value)
+
+
+def test_resolve_public_target_empty_hostname():
+    from app.core.outbound import DNSResolutionError
+    with pytest.raises(DNSResolutionError):
+        resolve_public_target("   ")

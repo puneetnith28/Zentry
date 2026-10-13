@@ -8,11 +8,17 @@ IP classification, safe DNS resolution, and pinned connections.
 from __future__ import annotations
 
 import ipaddress
+import socket
 from typing import Final
 
 
 class ProhibitedDestinationError(ValueError):
     """Raised when an outbound network destination violates security policy."""
+    pass
+
+
+class DNSResolutionError(ValueError):
+    """Raised when DNS resolution for an outbound target fails."""
     pass
 
 
@@ -116,3 +122,71 @@ def validate_ip_destination(
             f"Outbound connection to prohibited destination blocked: {ip}"
         )
     return ip
+
+
+def resolve_public_target(
+    hostname: str,
+    port: int = 0,
+    *,
+    family: int = socket.AF_UNSPEC,
+) -> tuple[ipaddress.IPv4Address | ipaddress.IPv6Address, ...]:
+    """
+    Resolve a hostname and verify that every returned IP address is strictly public.
+    
+    Enforces safe multi-answer policy: if ANY returned IP address is prohibited,
+    the entire target is rejected to protect against DNS rebinding and split-horizon SSRF.
+    
+    Returns a tuple of validated IP address objects.
+    """
+    clean_host = hostname.strip().rstrip(".")
+    if not clean_host:
+        raise DNSResolutionError("Empty hostname provided for DNS resolution")
+
+    # If the target is already an IP address, validate it directly
+    try:
+        ip = ipaddress.ip_address(clean_host)
+        return (validate_ip_destination(ip),)
+    except ValueError:
+        pass  # Hostname string, proceed with DNS lookup
+
+    try:
+        addrinfo = socket.getaddrinfo(
+            clean_host,
+            port,
+            family=family,
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror as exc:
+        raise DNSResolutionError(f"Unable to resolve hostname: {clean_host}") from exc
+
+    if not addrinfo:
+        raise DNSResolutionError(f"No DNS records returned for hostname: {clean_host}")
+
+    resolved_ips: list[ipaddress.IPv4Address | ipaddress.IPv6Address] = []
+    seen: set[str] = set()
+
+    for item in addrinfo:
+        sockaddr = item[4]
+        ip_str = sockaddr[0]
+        if ip_str in seen:
+            continue
+        seen.add(ip_str)
+
+        try:
+            ip = parse_ip_address(ip_str)
+        except ProhibitedDestinationError as exc:
+            raise ProhibitedDestinationError(
+                f"Target {clean_host} resolved to invalid IP address: {ip_str}"
+            ) from exc
+
+        if is_prohibited_ip(ip):
+            raise ProhibitedDestinationError(
+                f"Target {clean_host} resolves to prohibited address: {ip_str}"
+            )
+
+        resolved_ips.append(ip)
+
+    if not resolved_ips:
+        raise DNSResolutionError(f"No valid IP addresses resolved for hostname: {clean_host}")
+
+    return tuple(resolved_ips)
