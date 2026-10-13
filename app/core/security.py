@@ -1,9 +1,42 @@
+from datetime import datetime, timedelta, timezone
 import secrets
 
 import bcrypt
+import jwt
 from fastapi import Header, HTTPException, status
 
 from app.core.config import get_settings
+
+
+def create_access_token(
+    data: dict,
+    expires_delta: timedelta | None = None,
+) -> str:
+    """Create and sign a JWT access token with expiration."""
+    settings = get_settings()
+    to_encode = data.copy()
+    now = datetime.now(timezone.utc)
+    if expires_delta:
+        expire = now + expires_delta
+    else:
+        expire = now + timedelta(minutes=settings.access_token_expire_minutes)
+    to_encode.update({"exp": expire, "iat": now})
+    return jwt.encode(
+        to_encode,
+        settings.jwt_secret_key,
+        algorithm=settings.jwt_algorithm,
+    )
+
+
+def decode_access_token(token: str) -> dict:
+    """Decode and verify a JWT access token, raising PyJWTError if invalid or expired."""
+    settings = get_settings()
+    return jwt.decode(
+        token,
+        settings.jwt_secret_key,
+        algorithms=[settings.jwt_algorithm],
+    )
+
 
 
 def get_password_hash(password: str) -> str:
