@@ -209,3 +209,66 @@ def test_scan_with_empty_port_list_rejected(client, db_session):
         },
     )
     assert response.status_code == 422
+
+
+def test_scan_with_unknown_options_rejected(client, db_session):
+    _, headers = create_test_user(db_session)
+    response = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"unsupported_flag": True},
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_scan_with_unknown_root_fields_rejected(client, db_session):
+    _, headers = create_test_user(db_session)
+    response = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {},
+            "malicious_extra_field": "injected",
+        },
+    )
+    assert response.status_code == 422
+
+
+def test_scan_with_out_of_bounds_timeout_and_redirects(client, db_session):
+    _, headers = create_test_user(db_session)
+    # Timeout too low (< 1.0)
+    res_low = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"timeout": 0.2},
+        },
+    )
+    assert res_low.status_code == 422
+
+    # Timeout too high (> 60.0)
+    res_high = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"timeout": 120.0},
+        },
+    )
+    assert res_high.status_code == 422
+
+    # Redirects too high (> 10)
+    res_redir = client.post(
+        "/api/v1/scans/",
+        headers=headers,
+        json={
+            "target": "https://example.com",
+            "options": {"max_redirects": 25},
+        },
+    )
+    assert res_redir.status_code == 422

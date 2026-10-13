@@ -2,18 +2,22 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.db.models import ScanStatusEnum
 
 
 class ScanOptions(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ssl_scan: bool = True
     headers_scan: bool = True
     port_scan: bool = True
     tech_scan: bool = True
     subdomain_scan: bool = True
     port_list: list[int] | None = None
+    timeout: float = Field(default=10.0, ge=1.0, le=60.0)
+    max_redirects: int = Field(default=5, ge=0, le=10)
 
     @field_validator("port_list")
     @classmethod
@@ -43,6 +47,8 @@ class ScanOptions(BaseModel):
 
 
 class ScanCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     target: str
     options: ScanOptions = Field(default_factory=ScanOptions)
 
