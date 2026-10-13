@@ -377,3 +377,41 @@ def test_get_scan_returns_timing_metrics(client, db_session):
     assert data["finished_at"] is not None
     assert data["duration_seconds"] == 8.75
 
+
+def test_enqueue_failure_marks_scan_failed_and_returns_503(client, db_session):
+    user, headers = create_test_user(db_session)
+    with patch(
+        "app.api.v1.scans.scan_task.delay",
+        side_effect=Exception("Redis broker connection refused"),
+    ):
+        response = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={"target": "https://enqueue-fail.example.com", "options": {}},
+        )
+
+    assert response.status_code == 503
+    assert "broker is temporarily unavailable" in response.json()["detail"].lower()
+    assert response.headers.get("retry-after") == "30"
+
+    # Verify the scan was persisted but marked as FAILED with error description
+    failed_job = (
+        db_session.query(ScanJob)
+        .filter(ScanJob.target_url == "https://enqueue-fail.example.com")
+        .first()
+    )
+    assert failed_job is not None
+    assert failed_job.status == ScanStatusEnum.FAILED
+    assert "dispatch scan" in failed_job.error_message.lower()
+    assert failed_job.finished_at is not None
+
+    # Verify active quota is not locked: user can immediately enqueue a successful scan
+    with patch("app.api.v1.scans.scan_task.delay"):
+        retry_res = client.post(
+            "/api/v1/scans/",
+            headers=headers,
+            json={"target": "https://enqueue-success.example.com", "options": {}},
+        )
+    assert retry_res.status_code == 202
+
+

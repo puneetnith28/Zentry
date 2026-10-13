@@ -1,7 +1,10 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.api.dependencies import get_current_user, get_db
 from app.core.celery_app import get_queue_depth
@@ -162,7 +165,18 @@ def create_scan(
     db.commit()
     db.refresh(job)
 
-    scan_task.delay(str(job.id))
+    try:
+        scan_task.delay(str(job.id))
+    except Exception as exc:
+        logger.error("Failed to enqueue scan task for job %s: %s", job.id, exc)
+        job.transition_to(ScanStatusEnum.FAILED)
+        job.error_message = "Failed to dispatch scan to background worker queue"
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to enqueue scan task. Broker is temporarily unavailable.",
+            headers={"Retry-After": "30"},
+        )
 
     return ScanCreateResponse(scan_id=job.id, status=job.status)
 
