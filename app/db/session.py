@@ -37,8 +37,12 @@ def init_db() -> None:
 
 
 def get_db() -> Generator[Session, None, None]:
+    """Yield a database session, automatically rolling back on exception and closing on completion."""
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

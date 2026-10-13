@@ -45,3 +45,40 @@ def test_check_db_connectivity_raises_after_max_retries():
                 check_db_connectivity(max_retries=2, retry_interval=0.01)
 
             assert mock_connect.call_count == 2
+
+
+def test_get_db_clean_lifecycle():
+    from app.db.session import get_db
+
+    with patch("app.db.session.SessionLocal") as mock_session_cls:
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        gen = get_db()
+        db = next(gen)
+        assert db == mock_session
+        mock_session.close.assert_not_called()
+
+        with pytest.raises(StopIteration):
+            next(gen)
+
+        mock_session.rollback.assert_not_called()
+        mock_session.close.assert_called_once()
+
+
+def test_get_db_rollback_on_unhandled_exception():
+    from app.db.session import get_db
+
+    with patch("app.db.session.SessionLocal") as mock_session_cls:
+        mock_session = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        gen = get_db()
+        db = next(gen)
+        assert db == mock_session
+
+        with pytest.raises(RuntimeError, match="simulated error"):
+            gen.throw(RuntimeError("simulated error"))
+
+        mock_session.rollback.assert_called_once()
+        mock_session.close.assert_called_once()
