@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     block_private_targets: bool = True
     outbound_proxy_url: str | None = None
     outbound_trust_env: bool = False
+    jwt_secret_key: str = "zentry-dev-insecure-secret-key-change-in-production"
+    jwt_algorithm: str = "HS256"
+    access_token_expire_minutes: int = 60 * 24
 
 
 @lru_cache

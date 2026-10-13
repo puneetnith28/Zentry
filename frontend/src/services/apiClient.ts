@@ -11,11 +11,12 @@ export const apiClient = axios.create({
 })
 
 apiClient.interceptors.request.use((config) => {
-  const apiKey = import.meta.env.VITE_API_KEY
-  if (apiKey) {
-    config.headers['X-API-Key'] = apiKey
+  const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`
   }
   return config
 })
+
 
 export default apiClient
