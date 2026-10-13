@@ -146,3 +146,35 @@ def test_resolve_public_target_empty_hostname():
     from app.core.outbound import DNSResolutionError
     with pytest.raises(DNSResolutionError):
         resolve_public_target("   ")
+
+
+@pytest.mark.asyncio
+async def test_safe_transport_blocks_loopback_connection():
+    from app.core.outbound import create_safe_async_client, ProhibitedDestinationError
+    async with create_safe_async_client() as client:
+        with pytest.raises(ProhibitedDestinationError) as exc:
+            await client.get("http://127.0.0.1:8000/test")
+        assert "prohibited address: 127.0.0.1" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_transport_blocks_private_dns_resolution(monkeypatch):
+    from app.core.outbound import create_safe_async_client, ProhibitedDestinationError
+    fake_addrinfo = [(2, 1, 6, "", ("169.254.169.254", 80))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    async with create_safe_async_client() as client:
+        with pytest.raises(ProhibitedDestinationError) as exc:
+            await client.get("http://metadata.cloud.internal/latest")
+        assert "resolves to prohibited address: 169.254.169.254" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_client_defaults():
+    from app.core.outbound import create_safe_async_client, SafeAsyncHTTPTransport
+    client = create_safe_async_client(timeout=15.0)
+    assert not client.follow_redirects
+    assert not client.trust_env
+    assert client.timeout.connect == 15.0
+    assert isinstance(client._transport, SafeAsyncHTTPTransport)
+    await client.aclose()

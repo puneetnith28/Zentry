@@ -11,6 +11,9 @@ import ipaddress
 import socket
 from typing import Final
 
+import httpcore
+import httpx
+
 
 class ProhibitedDestinationError(ValueError):
     """Raised when an outbound network destination violates security policy."""
@@ -190,3 +193,62 @@ def resolve_public_target(
         raise DNSResolutionError(f"No valid IP addresses resolved for hostname: {clean_host}")
 
     return tuple(resolved_ips)
+
+
+class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
+    """Network backend that intercepts TCP connections and pins them to pre-validated public IPs."""
+
+    def __init__(self, inner: httpcore.AsyncNetworkBackend) -> None:
+        self._inner = inner
+
+    async def connect_tcp(
+        self,
+        host: str,
+        port: int,
+        timeout: float | None = None,
+        local_address: str | None = None,
+        socket_options = None,
+    ) -> httpcore.AsyncNetworkStream:
+        resolved = resolve_public_target(host, port)
+        pinned_ip = str(resolved[0])
+        return await self._inner.connect_tcp(
+            pinned_ip,
+            port,
+            timeout=timeout,
+            local_address=local_address,
+            socket_options=socket_options,
+        )
+
+    async def connect_unix_socket(self, *args, **kwargs) -> httpcore.AsyncNetworkStream:
+        return await self._inner.connect_unix_socket(*args, **kwargs)
+
+    async def sleep(self, seconds: float) -> None:
+        await self._inner.sleep(seconds)
+
+
+class SafeAsyncHTTPTransport(httpx.AsyncHTTPTransport):
+    """Custom HTTP transport that pins connections to pre-validated public IPs to prevent DNS rebinding."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        orig_backend = getattr(self._pool, "_network_backend", None)
+        if orig_backend is not None:
+            self._pool._network_backend = PinnedNetworkBackend(orig_backend)
+
+
+def create_safe_async_client(
+    timeout: float = 10.0,
+    *,
+    follow_redirects: bool = False,
+    trust_env: bool = False,
+    **kwargs,
+) -> httpx.AsyncClient:
+    """Create an httpx.AsyncClient configured with SafeAsyncHTTPTransport."""
+    transport = SafeAsyncHTTPTransport(trust_env=trust_env)
+    return httpx.AsyncClient(
+        transport=transport,
+        timeout=timeout,
+        follow_redirects=follow_redirects,
+        trust_env=trust_env,
+        **kwargs,
+    )
