@@ -18,6 +18,14 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.core.outbound import (
+    DEFAULT_TECH_MAX_RESPONSE_BYTES,
+    DNSResolutionError,
+    MaxRedirectsExceededError,
+    ProhibitedDestinationError,
+    ResponseBodyTooLargeError,
+    safe_request,
+)
 from app.services.common import (
     Finding,
     FindingSeverity,
@@ -664,25 +672,41 @@ async def inspect_technology_async(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Passively fingerprint technologies used by *target*.
 
-    Makes a single GET request. Analyses HTTP response headers and the
-    first ``MAX_BODY_BYTES`` of HTML body content.
+    Makes a single GET request through the safe outbound gateway.
+    Analyses HTTP response headers and the first ``MAX_BODY_BYTES`` of HTML body content.
     """
     url = _normalize_url(target)
     logger.info("Technology scan starting for %s", url)
 
     try:
-        # Reach out to the target server. We're not following redirects
-        # because we only want to analyze the exact URL requested.
-        async with httpx.AsyncClient(
+        # Reach out to the target server safely through outbound gateway.
+        response = await safe_request(
+            method="GET",
+            url=url,
+            client=client,
             follow_redirects=False,
             timeout=timeout,
-            verify=True,
-        ) as client:
-            response = await client.get(url)
-    except httpx.RequestError as exc:
+            max_response_bytes=DEFAULT_TECH_MAX_RESPONSE_BYTES,
+        )
+    except (ProhibitedDestinationError, DNSResolutionError) as exc:
+        logger.warning("Technology scan blocked prohibited destination for %s: %s", url, exc)
+        return TechScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=url,
+            error=ModuleScanError(code="PROHIBITED_DESTINATION", message=str(exc)),
+        ).to_dict()
+    except ResponseBodyTooLargeError as exc:
+        logger.warning("Technology scan response body too large for %s: %s", url, exc)
+        return TechScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=url,
+            error=ModuleScanError(code="RESPONSE_TOO_LARGE", message=str(exc)),
+        ).to_dict()
+    except (httpx.RequestError, MaxRedirectsExceededError) as exc:
         logger.warning("Technology scan HTTP error for %s: %s", url, exc)
         return TechScanResult(
             status=ModuleScanStatus.ERROR,
@@ -691,7 +715,7 @@ async def inspect_technology_async(
         ).to_dict()
 
     headers = dict(response.headers)
-    
+
     # Grab the first chunk of the HTML body. We don't want to parse megabytes
     # of a huge file, so we cap it to MAX_BODY_BYTES.
     body_bytes = response.content[:MAX_BODY_BYTES]
@@ -729,6 +753,7 @@ def inspect_technology(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Synchronous wrapper around :func:`inspect_technology_async`."""
-    return asyncio.run(inspect_technology_async(target, timeout=timeout))
+    return asyncio.run(inspect_technology_async(target, timeout=timeout, client=client))

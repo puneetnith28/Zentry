@@ -16,3 +16,12 @@ def test_parse_target(target, port, expected_host, expected_port):
     host, resolved = _parse_target(target, port)
     assert host == expected_host
     assert resolved == expected_port
+
+
+@pytest.mark.asyncio
+async def test_inspect_ssl_blocks_prohibited_destination():
+    from app.services.ssl import inspect_ssl_async
+
+    result = await inspect_ssl_async("127.0.0.1")
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROHIBITED_DESTINATION"

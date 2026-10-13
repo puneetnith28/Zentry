@@ -12,6 +12,11 @@ from dataclasses import dataclass, field
 from typing import Any, Final
 from urllib.parse import urlparse
 
+from app.core.outbound import (
+    DNSResolutionError,
+    ProhibitedDestinationError,
+    resolve_public_target,
+)
 from app.services.common import (
     Finding,
     FindingSeverity,
@@ -158,9 +163,17 @@ async def scan_ports_async(
     port_tuple = tuple(ports) if ports else DEFAULT_PORTS
 
     try:
-        # Validate that the host actually exists before we waste time scanning it
-        await asyncio.to_thread(socket.getaddrinfo, host, None)
-    except socket.gaierror as exc:
+        # Validate that the host resolves to an authorized public destination
+        pinned_ip = await asyncio.to_thread(
+            resolve_public_target, host, port_tuple[0] if port_tuple else 80
+        )
+    except ProhibitedDestinationError as exc:
+        return PortScanResult(
+            status=ModuleScanStatus.ERROR,
+            host=host,
+            error=ModuleScanError(code="PROHIBITED_DESTINATION", message=str(exc)),
+        ).to_dict()
+    except (socket.gaierror, DNSResolutionError) as exc:
         return PortScanResult(
             status=ModuleScanStatus.ERROR,
             host=host,
@@ -168,8 +181,16 @@ async def scan_ports_async(
         ).to_dict()
 
     try:
-        result = await _scan_ports(host, port_tuple, timeout=timeout)
-        return result.to_dict()
+        result = await _scan_ports(pinned_ip, port_tuple, timeout=timeout)
+        return PortScanResult(
+            status=result.status,
+            host=host,
+            open_ports=result.open_ports,
+            closed_ports=result.closed_ports,
+            filtered_ports=result.filtered_ports,
+            findings=result.findings,
+            error=result.error,
+        ).to_dict()
     except Exception as exc:
         return PortScanResult(
             status=ModuleScanStatus.ERROR,

@@ -12,9 +12,17 @@ import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any, Final
+import ipaddress
 from urllib.parse import urlparse
 
 import httpx
+
+from app.core.outbound import (
+    DNSResolutionError,
+    ProhibitedDestinationError,
+    create_safe_async_client,
+    is_prohibited_ip,
+)
 
 from app.services.common import (
     Finding,
@@ -109,16 +117,25 @@ def _is_valid_subdomain(candidate: str, domain: str) -> bool:
     return True
 
 
-async def _fetch_crtsh(domain: str, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
+async def _fetch_crtsh(
+    domain: str,
+    timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
+) -> list[str]:
     """Query crt.sh certificate transparency logs for subdomains of *domain*."""
     params = {"q": f"%.{domain}", "output": "json"}
     headers = {"User-Agent": "Zentry-Security-Scanner/1.0"}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        if client is not None:
             response = await client.get(CRTSH_URL, params=params, headers=headers)
             response.raise_for_status()
             data = response.json()
-    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as exc:
+        else:
+            async with create_safe_async_client(timeout=timeout) as safe_client:
+                response = await safe_client.get(CRTSH_URL, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError, ProhibitedDestinationError) as exc:
         logger.warning("crt.sh query failed for %s: %s", domain, exc)
         return []
 
@@ -193,6 +210,7 @@ async def discover_subdomains_async(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Passively enumerate subdomains for *target*.
 
@@ -211,9 +229,31 @@ async def discover_subdomains_async(
             error=ModuleScanError(code="INVALID_TARGET", message=str(exc)),
         ).to_dict()
 
+    try:
+        ip_obj = ipaddress.ip_address(domain)
+        if is_prohibited_ip(ip_obj):
+            return SubdomainScanResult(
+                status=ModuleScanStatus.ERROR,
+                target=target,
+                error=ModuleScanError(
+                    code="PROHIBITED_DESTINATION",
+                    message=f"Subdomain scanning cannot target prohibited IP destination: {domain}",
+                ),
+            ).to_dict()
+        return SubdomainScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=target,
+            error=ModuleScanError(
+                code="INVALID_TARGET",
+                message=f"Subdomain scanning requires a domain name, not an IP address: {domain}",
+            ),
+        ).to_dict()
+    except ValueError:
+        pass
+
     logger.info("Subdomain discovery starting for %s", domain)
 
-    raw_names = await _fetch_crtsh(domain, timeout=timeout)
+    raw_names = await _fetch_crtsh(domain, timeout=timeout, client=client)
 
     validated: list[str] = [
         name for name in raw_names if _is_valid_subdomain(name, domain)
@@ -251,6 +291,9 @@ def discover_subdomains(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Synchronous wrapper around :func:`discover_subdomains_async`."""
-    return asyncio.run(discover_subdomains_async(target, timeout=timeout))
+    return asyncio.run(
+        discover_subdomains_async(target, timeout=timeout, client=client)
+    )

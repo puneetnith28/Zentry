@@ -213,3 +213,12 @@ class TestDeduplication:
         result = _deduplicate_fingerprints(fps)
         assert result[0].name == "nginx"
         assert result[1].name == "jQuery"
+
+
+@pytest.mark.asyncio
+async def test_inspect_technology_blocks_prohibited_destination():
+    from app.services.technology import inspect_technology_async
+
+    result = await inspect_technology_async("http://127.0.0.1:8000")
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROHIBITED_DESTINATION"

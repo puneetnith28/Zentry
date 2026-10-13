@@ -16,6 +16,12 @@ from enum import Enum
 from typing import Any, Final
 from urllib.parse import urlparse
 
+from app.core.outbound import (
+    DNSResolutionError,
+    ProhibitedDestinationError,
+    resolve_public_target,
+)
+
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
@@ -221,6 +227,18 @@ def _run_inspection(
         # First, try a "strict" handshake exactly like a standard browser would do.
         # This will fail if the cert is expired, self-signed, or the hostname doesn't match.
         strict = _perform_handshake(host, port, timeout=timeout, verify=True)
+    except ProhibitedDestinationError as exc:
+        return _error_result(
+            scan_target,
+            code="PROHIBITED_DESTINATION",
+            message=str(exc),
+        )
+    except DNSResolutionError as exc:
+        return _error_result(
+            scan_target,
+            code="DNS_RESOLUTION_FAILED",
+            message=str(exc),
+        )
     except (socket.timeout, TimeoutError):
         return _error_result(
             scan_target,
@@ -391,25 +409,17 @@ def _perform_handshake(
 
 
 def _connect(host: str, port: int, *, timeout: float) -> socket.socket:
-    addrinfos = socket.getaddrinfo(
-        host,
-        port,
-        type=socket.SOCK_STREAM,
-        proto=socket.IPPROTO_TCP,
-    )
-    last_error: OSError | None = None
-    for family, socktype, proto, _canonname, sockaddr in addrinfos:
-        sock = socket.socket(family, socktype, proto)
-        try:
-            sock.settimeout(timeout)
-            sock.connect(sockaddr)
-            return sock
-        except OSError as exc:
-            last_error = exc
-            sock.close()
-    if last_error is not None:
-        raise last_error
-    raise OSError(f"No connectable addresses for {host}:{port}")
+    # Resolve and validate destination against outbound security policy
+    ip_str = resolve_public_target(host, port)
+    family = socket.AF_INET6 if ":" in ip_str else socket.AF_INET
+    sock = socket.socket(family, socket.SOCK_STREAM, socket.IPPROTO_TCP)
+    try:
+        sock.settimeout(timeout)
+        sock.connect((ip_str, port))
+        return sock
+    except Exception:
+        sock.close()
+        raise
 
 
 def _get_cert_chain_der(tls_sock: ssl.SSLSocket) -> list[bytes]:

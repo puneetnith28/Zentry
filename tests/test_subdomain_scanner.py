@@ -350,3 +350,12 @@ async def test_discover_subdomains_invalid_json(monkeypatch) -> None:
     result = await discover_subdomains_async("example.com")
     assert result["status"] == "success"
     assert result["total_discovered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_discover_subdomains_blocks_prohibited_ip_target():
+    from app.services.subdomain import discover_subdomains_async
+
+    result = await discover_subdomains_async("127.0.0.1")
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROHIBITED_DESTINATION"
