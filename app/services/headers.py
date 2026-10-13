@@ -13,6 +13,14 @@ from urllib.parse import urlparse
 
 import httpx
 
+from app.core.outbound import (
+    DEFAULT_HEADERS_MAX_RESPONSE_BYTES,
+    DNSResolutionError,
+    MaxRedirectsExceededError,
+    ProhibitedDestinationError,
+    ResponseBodyTooLargeError,
+    safe_request,
+)
 from app.services.common import (
     Finding,
     FindingSeverity,
@@ -189,8 +197,9 @@ async def inspect_headers_async(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    """Fetch and analyze HTTP security headers for *target*."""
+    """Fetch and analyze HTTP security headers for *target* safely through outbound gateway."""
     url = _normalize_url(target)
     parsed = urlparse(url)
     is_https = parsed.scheme == "https"
@@ -198,13 +207,28 @@ async def inspect_headers_async(
     try:
         # We don't follow redirects here because we want to analyze the exact endpoint requested.
         # Often, a redirect itself is missing security headers before sending you to the secure site.
-        async with httpx.AsyncClient(
+        # Outbound gateway enforces IP policy, DNS pinning, and byte limits.
+        response = await safe_request(
+            method="GET",
+            url=url,
+            client=client,
             follow_redirects=False,
             timeout=timeout,
-            verify=True,
-        ) as client:
-            response = await client.get(url)
-    except httpx.RequestError as exc:
+            max_response_bytes=DEFAULT_HEADERS_MAX_RESPONSE_BYTES,
+        )
+    except (ProhibitedDestinationError, DNSResolutionError) as exc:
+        return HeadersScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=url,
+            error=ModuleScanError(code="PROHIBITED_DESTINATION", message=str(exc)),
+        ).to_dict()
+    except ResponseBodyTooLargeError as exc:
+        return HeadersScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=url,
+            error=ModuleScanError(code="RESPONSE_TOO_LARGE", message=str(exc)),
+        ).to_dict()
+    except (httpx.RequestError, MaxRedirectsExceededError) as exc:
         return HeadersScanResult(
             status=ModuleScanStatus.ERROR,
             target=url,
@@ -229,5 +253,6 @@ def inspect_headers(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
-    return asyncio.run(inspect_headers_async(target, timeout=timeout))
+    return asyncio.run(inspect_headers_async(target, timeout=timeout, client=client))

@@ -374,6 +374,7 @@ async def safe_request(
     url: str,
     *,
     client: httpx.AsyncClient | None = None,
+    follow_redirects: bool = True,
     max_redirects: int = 5,
     timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
     max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
@@ -412,7 +413,7 @@ async def safe_request(
                 **kwargs,
             )
 
-            if response.status_code in (301, 302, 303, 307, 308) and "location" in response.headers:
+            if follow_redirects and response.status_code in (301, 302, 303, 307, 308) and "location" in response.headers:
                 redirect_count += 1
                 if redirect_count > max_redirects:
                     raise MaxRedirectsExceededError(
