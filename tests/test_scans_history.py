@@ -217,3 +217,90 @@ def test_history_sorting_order(client, db_session):
     # Invalid sort order
     res_bad = client.get("/api/v1/scans/?sort_order=invalid", headers=headers)
     assert res_bad.status_code == 422
+
+
+def test_history_multi_user_large_dataset_isolation_and_pagination(client, db_session):
+    user1, headers1 = create_user(db_session, "large_u1")
+    user2, headers2 = create_user(db_session, "large_u2")
+    now = datetime.now(timezone.utc)
+
+    # 25 scans for user 1
+    u1_jobs = [
+        ScanJob(
+            target_url=f"https://u1-site-{i:02d}.com",
+            status=ScanStatusEnum.COMPLETED if i % 2 == 0 else ScanStatusEnum.RUNNING,
+            user_id=user1.id,
+            created_at=now - timedelta(minutes=50 - i),
+        )
+        for i in range(25)
+    ]
+    # 15 scans for user 2
+    u2_jobs = [
+        ScanJob(
+            target_url=f"https://u2-site-{i:02d}.com",
+            status=ScanStatusEnum.COMPLETED,
+            user_id=user2.id,
+            created_at=now - timedelta(minutes=30 - i),
+        )
+        for i in range(15)
+    ]
+    db_session.add_all(u1_jobs + u2_jobs)
+    db_session.commit()
+
+    # User 1 page 1 (10 items)
+    p1 = client.get("/api/v1/scans/?page=1&page_size=10", headers=headers1).json()
+    assert p1["total"] == 25
+    assert p1["total_pages"] == 3
+    assert len(p1["items"]) == 10
+
+    # User 1 page 3 (last 5 items)
+    p3 = client.get("/api/v1/scans/?page=3&page_size=10", headers=headers1).json()
+    assert len(p3["items"]) == 5
+
+    # Verify zero user 2 items present in user 1 pages
+    all_u1_targets = [item["target_url"] for item in p1["items"] + p3["items"]]
+    for target in all_u1_targets:
+        assert target.startswith("https://u1-site-")
+
+    # User 2 page 1 (10 items out of 15)
+    u2_p1 = client.get("/api/v1/scans/?page=1&page_size=10", headers=headers2).json()
+    assert u2_p1["total"] == 15
+    assert u2_p1["total_pages"] == 2
+    assert len(u2_p1["items"]) == 10
+
+
+def test_history_combined_filters_status_and_target_and_sorting(client, db_session):
+    user, headers = create_user(db_session, "comb_user")
+    now = datetime.now(timezone.utc)
+
+    j1 = ScanJob(target_url="https://app.prod.com", status=ScanStatusEnum.COMPLETED, user_id=user.id, created_at=now - timedelta(hours=2))
+    j2 = ScanJob(target_url="https://api.prod.com", status=ScanStatusEnum.COMPLETED, user_id=user.id, created_at=now - timedelta(hours=1))
+    j3 = ScanJob(target_url="https://dev.prod.com", status=ScanStatusEnum.FAILED, user_id=user.id, created_at=now)
+    j4 = ScanJob(target_url="https://app.other.com", status=ScanStatusEnum.COMPLETED, user_id=user.id, created_at=now)
+    db_session.add_all([j1, j2, j3, j4])
+    db_session.commit()
+
+    # Filter target "prod.com" AND status COMPLETED with sort_order=asc
+    res = client.get("/api/v1/scans/?target=prod.com&status=COMPLETED&sort_order=asc", headers=headers)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total"] == 2
+    # Ascending order: app.prod.com (older) then api.prod.com (newer)
+    assert data["items"][0]["target_url"] == "https://app.prod.com"
+    assert data["items"][1]["target_url"] == "https://api.prod.com"
+
+
+def test_history_pagination_parameter_validation_bounds(client, db_session):
+    _, headers = create_user(db_session)
+
+    # page < 1 rejected
+    res_p0 = client.get("/api/v1/scans/?page=0", headers=headers)
+    assert res_p0.status_code == 422
+
+    # page_size < 1 rejected
+    res_ps0 = client.get("/api/v1/scans/?page_size=0", headers=headers)
+    assert res_ps0.status_code == 422
+
+    # page_size > 100 rejected
+    res_ps_large = client.get("/api/v1/scans/?page_size=101", headers=headers)
+    assert res_ps_large.status_code == 422

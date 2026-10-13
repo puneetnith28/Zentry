@@ -213,9 +213,12 @@ async def test_safe_request_redirect_to_prohibited_scheme():
 
 
 @pytest.mark.asyncio
-async def test_safe_request_max_redirects_exceeded():
+async def test_safe_request_max_redirects_exceeded(monkeypatch):
     import httpx
     from app.core.outbound import safe_request, MaxRedirectsExceededError
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
 
     async def mock_handler(request: httpx.Request):
         return httpx.Response(302, headers={"location": "http://example.com/loop"})
