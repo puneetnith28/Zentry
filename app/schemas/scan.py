@@ -83,3 +83,22 @@ class ScanDetailResponse(BaseModel):
     user_id: UUID | None = None
     result: ScanResultPayload | None = None
     error_message: str | None = None
+
+
+class ScanSummaryItem(BaseModel):
+    scan_id: UUID
+    target_url: str
+    status: ScanStatusEnum
+    created_at: datetime
+    updated_at: datetime
+    user_id: UUID | None = None
+    summary: FindingSummary | None = None
+    error_message: str | None = None
+
+
+class PaginatedScanHistoryResponse(BaseModel):
+    items: list[ScanSummaryItem]
+    total: int
+    page: int
+    page_size: int
+    total_pages: int

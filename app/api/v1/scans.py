@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_current_user, get_db
@@ -11,14 +11,69 @@ from app.core.target_validation import TargetValidationError, validate_scan_targ
 from app.db.models import ScanJob, ScanStatusEnum, User
 from app.schemas.scan import (
     FindingSummary,
+    PaginatedScanHistoryResponse,
     ScanCreateRequest,
     ScanCreateResponse,
     ScanDetailResponse,
     ScanResultPayload,
+    ScanSummaryItem,
 )
 from app.worker.tasks import scan_task
 
 router = APIRouter(prefix="/scans", tags=["scans"])
+
+
+@router.get(
+    "/",
+    response_model=PaginatedScanHistoryResponse,
+)
+def list_scans(
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Items per page"),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PaginatedScanHistoryResponse:
+    query = db.query(ScanJob)
+    if not current_user.is_superuser:
+        query = query.filter(ScanJob.user_id == current_user.id)
+
+    total = query.count()
+    offset = (page - 1) * page_size
+    jobs = (
+        query.order_by(ScanJob.created_at.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
+    )
+
+    items: list[ScanSummaryItem] = []
+    for job in jobs:
+        summary: FindingSummary | None = None
+        if job.result_payload and "summary" in job.result_payload:
+            summary = FindingSummary(**job.result_payload["summary"])
+
+        items.append(
+            ScanSummaryItem(
+                scan_id=job.id,
+                target_url=job.target_url,
+                status=job.status,
+                created_at=job.created_at,
+                updated_at=job.updated_at,
+                user_id=job.user_id,
+                summary=summary,
+                error_message=job.error_message,
+            )
+        )
+
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 0
+
+    return PaginatedScanHistoryResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
 
 
 @router.post(
