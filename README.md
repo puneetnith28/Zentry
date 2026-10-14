@@ -133,5 +133,18 @@ Zentry enforces strict operational safeguards to protect both scanning infrastru
    - No vulnerability exploitation, fuzzing payloads, brute-force dictionary attacks, or denial-of-service tests are performed.
    - Operations consist strictly of standard protocol handshakes, HTTP metadata retrieval, and passive log querying.
 
-3. **API Access Control:**
-   - API endpoints support configurable API key authentication via standard HTTP headers (`X-API-Key`).
+3. **Authentication & Multi-Tenant User Isolation:**
+   - Secure user authentication powered by stateless JSON Web Tokens (JWT) signed with SHA-256 (`HS256`) and hashed passwords using `bcrypt`.
+   - Complete multi-tenant data isolation: all scans, findings, and reports are strictly partitioned by authenticated user ID with role-based administrative access controls.
+   - Backward-compatible support for legacy system API keys (`X-API-Key`).
+
+4. **Network & Outbound Gateway Hardening:**
+   - Centralized safe outbound networking (`SafeStreamReader`) enforcing DNS-rebinding protection, private IP blocking, connection timeouts, and hard byte streaming limits (default 5 MB).
+   - Trusted reverse proxy validation ensuring client IP addresses are extracted securely from `X-Forwarded-For` without spoofing vulnerabilities.
+   - Strict sliding-window rate limiting on authentication and scan submission endpoints.
+
+5. **Operational Resilience & Resource Governance:**
+   - Dedicated Celery worker concurrency limits, task prefetch controls, and child process recycling.
+   - Database connection pooling with connect timeouts and automatic socket recycling.
+   - Fail-fast production configuration validator preventing insecure defaults.
+   - Fully isolated containerized network architecture running with a non-root system user.
