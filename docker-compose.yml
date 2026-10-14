@@ -15,6 +15,12 @@ services:
       timeout: 3s
       retries: 10
       start_period: 3s
+    networks:
+      - backend_internal
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
@@ -25,6 +31,12 @@ services:
       timeout: 3s
       retries: 10
       start_period: 2s
+    networks:
+      - backend_internal
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   api:
     build: .
@@ -42,13 +54,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    networks:
+      - backend_internal
+      - public_network
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
 
   worker:
     build: .
     container_name: scanner_worker
-    # Command to start the Celery worker defined in your core config
     command: celery -A app.core.celery_app:celery_app worker --loglevel=info --concurrency=4
-
     volumes:
       - .:/code
     environment:
@@ -65,7 +82,19 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - backend_internal
+      - public_network
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
 
+networks:
+  backend_internal:
+    internal: true
+  public_network:
+    driver: bridge
 
 volumes:
   postgres_data:
