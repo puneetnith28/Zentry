@@ -65,14 +65,74 @@ async def lifespan(_app: FastAPI):
 
 
 
+tags_metadata = [
+    {
+        "name": "Authentication",
+        "description": "User registration, authentication, JWT token generation, and account profile management.",
+    },
+    {
+        "name": "Scans",
+        "description": "Target submission, active scan lifecycle management, module configuration, and scan results.",
+    },
+    {
+        "name": "Reports",
+        "description": "Executive PDF report generation, secure cached downloads, and report metadata.",
+    },
+    {
+        "name": "Health",
+        "description": "Operational health probes, readiness checks, and diagnostic component statuses.",
+    },
+]
+
 settings = get_settings()
 
 app = FastAPI(
-    title="Zentry",
-    description="Scalable Website Security Scanner",
+    title="Zentry Security Scanner API",
+    description="Scalable, defensive website security posture scanner API providing automated risk assessment, non-intrusive network probing, and executive reporting.",
     version="1.0.0",
+    openapi_tags=tags_metadata,
+    contact={
+        "name": "Zentry Security Engineering",
+        "email": "security@zentry.local",
+    },
+    license_info={
+        "name": "MIT",
+        "url": "https://opensource.org/licenses/MIT",
+    },
     lifespan=lifespan,
 )
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    from fastapi.openapi.utils import get_openapi
+    openapi_schema = get_openapi(
+        title="Zentry Security Scanner API",
+        version="1.0.0",
+        description="Scalable, defensive website security posture scanner API providing automated risk assessment, non-intrusive network probing, and executive reporting.",
+        routes=app.routes,
+        tags=tags_metadata,
+    )
+    openapi_schema.setdefault("components", {})["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Enter JWT bearer token acquired from `/api/v1/auth/login`.",
+        },
+        "ApiKeyAuth": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-API-Key",
+            "description": "Legacy system API key authentication header.",
+        },
+    }
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 @app.middleware("http")
