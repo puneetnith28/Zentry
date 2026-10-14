@@ -24,7 +24,7 @@ from app.core.outbound import (
     MaxRedirectsExceededError,
     ProhibitedDestinationError,
     ResponseBodyTooLargeError,
-    safe_request,
+    safe_stream_request,
 )
 from app.services.common import (
     Finding,
@@ -672,26 +672,43 @@ async def inspect_technology_async(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    max_body_bytes: int = MAX_BODY_BYTES,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Passively fingerprint technologies used by *target*.
 
-    Makes a single GET request through the safe outbound gateway.
-    Analyses HTTP response headers and the first ``MAX_BODY_BYTES`` of HTML body content.
+    Makes a single streaming GET request through the safe outbound gateway.
+    Streams HTTP response body up to ``max_body_bytes`` (default 200 KB) in chunks
+    before halting the stream to prevent unbounded memory allocation and decompression bombs.
+    Analyses HTTP response headers and captured HTML body content.
     """
     url = _normalize_url(target)
     logger.info("Technology scan starting for %s", url)
 
+    body_chunks = bytearray()
+    headers: dict[str, str] = {}
+
     try:
-        # Reach out to the target server safely through outbound gateway.
-        response = await safe_request(
+        # Reach out to the target server safely through outbound streaming gateway.
+        chunk_read_size = min(8192, max_body_bytes) if max_body_bytes > 0 else 8192
+        async with safe_stream_request(
             method="GET",
             url=url,
             client=client,
-            follow_redirects=False,
             timeout=timeout,
-            max_response_bytes=DEFAULT_TECH_MAX_RESPONSE_BYTES,
-        )
+            max_response_bytes=None,  # Bounded via stream chunk consumption up to max_body_bytes
+        ) as response:
+            headers = dict(response.headers)
+            async for chunk in response.aiter_bytes(chunk_size=chunk_read_size):
+                remaining = max_body_bytes - len(body_chunks)
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    body_chunks.extend(chunk[:remaining])
+                    break
+                body_chunks.extend(chunk)
+                if len(body_chunks) >= max_body_bytes:
+                    break
     except (ProhibitedDestinationError, DNSResolutionError) as exc:
         logger.warning("Technology scan blocked prohibited destination for %s: %s", url, exc)
         return TechScanResult(
@@ -714,13 +731,8 @@ async def inspect_technology_async(
             error=ModuleScanError(code="REQUEST_FAILED", message=str(exc)),
         ).to_dict()
 
-    headers = dict(response.headers)
-
-    # Grab the first chunk of the HTML body. We don't want to parse megabytes
-    # of a huge file, so we cap it to MAX_BODY_BYTES.
-    body_bytes = response.content[:MAX_BODY_BYTES]
     try:
-        body = body_bytes.decode("utf-8", errors="replace")
+        body = body_chunks.decode("utf-8", errors="replace")
     except Exception:
         body = ""
 
@@ -753,7 +765,8 @@ def inspect_technology(
     target: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    max_body_bytes: int = MAX_BODY_BYTES,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Synchronous wrapper around :func:`inspect_technology_async`."""
-    return asyncio.run(inspect_technology_async(target, timeout=timeout, client=client))
+    return asyncio.run(inspect_technology_async(target, timeout=timeout, max_body_bytes=max_body_bytes, client=client))

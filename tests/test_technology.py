@@ -222,3 +222,110 @@ async def test_inspect_technology_blocks_prohibited_destination():
     result = await inspect_technology_async("http://127.0.0.1:8000")
     assert result["status"] == "error"
     assert result["error"]["code"] == "PROHIBITED_DESTINATION"
+
+
+@pytest.mark.asyncio
+async def test_inspect_technology_streams_10mb_response_bounded(monkeypatch):
+    import httpx
+    from app.services.technology import MAX_BODY_BYTES, inspect_technology_async
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    chunks_yielded = 0
+    bytes_yielded = 0
+    total_simulated_bytes = 10 * 1024 * 1024  # 10 MB
+    chunk_size = 8192
+    num_chunks = total_simulated_bytes // chunk_size
+
+    async def ten_mb_generator():
+        nonlocal chunks_yielded, bytes_yielded
+        # Place React marker right at the beginning
+        header_chunk = b'<html><head><script src="/static/js/react.production.min.js"></script></head><body>'
+        header_chunk += b"A" * (chunk_size - len(header_chunk))
+        chunks_yielded += 1
+        bytes_yielded += len(header_chunk)
+        yield header_chunk
+
+        for _ in range(num_chunks - 1):
+            chunks_yielded += 1
+            payload = b"A" * chunk_size
+            bytes_yielded += len(payload)
+            yield payload
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={
+                "Server": "nginx/1.24.0",
+                "Content-Type": "text/html",
+                "Content-Length": str(total_simulated_bytes),
+            },
+            content=ten_mb_generator(),
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+
+    result = await inspect_technology_async("http://example.com", client=client)
+
+    assert result["status"] == "success"
+    names = [fp["name"] for fp in result["fingerprints"]]
+    assert "nginx" in names
+    assert "React" in names
+
+    # Crucial assertion: Out of 1280 chunks (10 MB), only ~25 chunks were read before aborting!
+    max_expected_chunks = (MAX_BODY_BYTES // chunk_size) + 1
+    assert chunks_yielded <= max_expected_chunks + 1
+    assert bytes_yielded <= (MAX_BODY_BYTES + chunk_size)
+    assert bytes_yielded < 250_000  # Well under 250 KB, never downloaded the 10 MB!
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_inspect_technology_custom_byte_limit(monkeypatch):
+    import httpx
+    from app.services.technology import inspect_technology_async
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    chunks_yielded = 0
+
+    async def chunk_stream():
+        nonlocal chunks_yielded
+        for _ in range(50):
+            chunks_yielded += 1
+            yield b"X" * 1024
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=chunk_stream(), headers={"Content-Type": "text/html"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+
+    # Capped at only 2048 bytes (2 KB)
+    result = await inspect_technology_async("http://example.com", max_body_bytes=2048, client=client)
+
+    assert result["status"] == "success"
+    # Should only read 2-3 chunks of 1024 bytes, not all 50
+    assert chunks_yielded <= 3
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_inspect_technology_request_network_error(monkeypatch):
+    import httpx
+    from app.services.technology import inspect_technology_async
+
+    fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+    monkeypatch.setattr("socket.getaddrinfo", lambda *args, **kwargs: fake_addrinfo)
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("Connection refused by peer")
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+
+    result = await inspect_technology_async("http://example.com", client=client)
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "REQUEST_FAILED"
+    await client.aclose()
+
