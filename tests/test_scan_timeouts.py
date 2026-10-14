@@ -243,4 +243,42 @@ def test_scan_task_exhaustion_marks_failed(db_session):
     assert "database connection failed after maximum retry attempts" in job.error_message.lower()
 
 
+def test_duplicate_task_delivery_on_terminal_scans_ignored(db_session):
+    for terminal_status in ScanStatusEnum.terminal_statuses():
+        job = ScanJob(
+            target_url=f"https://terminal-{terminal_status.value.lower()}.example.com",
+            status=terminal_status,
+            result_payload={"original": "untouched"},
+        )
+        db_session.add(job)
+        db_session.commit()
+        db_session.refresh(job)
+
+        with patch("app.worker.tasks._execute_scan_with_deadline") as mock_exec:
+            scan_task(str(job.id), db=db_session)
+            mock_exec.assert_not_called()
+
+        db_session.refresh(job)
+        assert job.status == terminal_status
+        assert job.result_payload == {"original": "untouched"}
+
+
+def test_duplicate_task_delivery_on_concurrent_running_scan_ignored(db_session):
+    job = ScanJob(
+        target_url="https://already-running.example.com",
+        status=ScanStatusEnum.RUNNING,
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    with patch("app.worker.tasks._execute_scan_with_deadline") as mock_exec:
+        scan_task(str(job.id), db=db_session)
+        mock_exec.assert_not_called()
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.RUNNING
+
+
+
 

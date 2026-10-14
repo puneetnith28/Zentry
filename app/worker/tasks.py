@@ -173,15 +173,39 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
         own_session = True
     job = None
     try:
-        # Look up the scan job from the database
-        job = db.get(ScanJob, uuid.UUID(scan_id))
+        # Look up the scan job from the database with row locking where supported
+        query = db.query(ScanJob).filter(ScanJob.id == uuid.UUID(scan_id))
+        try:
+            job = query.with_for_update().first()
+        except Exception:
+            job = query.first()
+
         if job is None:
             logger.error("Scan job %s not found", scan_id)
             return
 
+        # Idempotency guard: ignore duplicate task delivery if already in a terminal state
+        if job.status in ScanStatusEnum.terminal_statuses():
+            logger.info(
+                "Scan job %s is already in terminal state %s; skipping duplicate execution",
+                scan_id,
+                job.status.value,
+            )
+            return
+
+        # Idempotency guard: if scan is already RUNNING and this is not a Celery retry attempt, ignore duplicate
+        retries = getattr(getattr(self, "request", None), "retries", 0)
+        if job.status == ScanStatusEnum.RUNNING and retries == 0:
+            logger.info(
+                "Scan job %s is already running in another worker; skipping duplicate execution",
+                scan_id,
+            )
+            return
+
         # Mark as running so the frontend shows the progress spinner
-        job.transition_to(ScanStatusEnum.RUNNING)
-        db.commit()
+        if job.status != ScanStatusEnum.RUNNING:
+            job.transition_to(ScanStatusEnum.RUNNING)
+            db.commit()
 
         options = job.options or {}
         user_timeout = options.get("timeout")
