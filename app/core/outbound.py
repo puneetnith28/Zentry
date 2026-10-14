@@ -375,6 +375,41 @@ async def read_bounded_response_stream(
     return await reader.read_all()
 
 
+def parse_bounded_json(
+    response: Any,
+    max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+) -> Any:
+    """
+    Safely inspects payload bounds before parsing JSON, preventing memory exhaustion attacks.
+
+    Validates Content-Length header and response body byte length against max_bytes budget
+    prior to invoking the JSON decoder.
+    """
+    headers = getattr(response, "headers", None)
+    if headers and hasattr(headers, "get"):
+        cl_header = headers.get("content-length")
+        if cl_header and str(cl_header).strip().isdigit() and int(str(cl_header).strip()) > max_bytes:
+            raise ResponseBodyTooLargeError(
+                f"Response Content-Length {cl_header} exceeds JSON parsing limit of {max_bytes} bytes"
+            )
+
+    content = getattr(response, "content", None)
+    if content is not None:
+        if len(content) > max_bytes:
+            raise ResponseBodyTooLargeError(
+                f"Response payload ({len(content)} bytes) exceeds JSON parsing limit of {max_bytes} bytes"
+            )
+
+    if hasattr(response, "json"):
+        return response.json()
+    import json
+    if isinstance(content, (bytes, bytearray)):
+        return json.loads(content.decode("utf-8"))
+    raise ValueError("Object does not have json() method or readable content")
+
+
+
+
 def create_safe_async_client(
     timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
     *,

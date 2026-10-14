@@ -20,8 +20,10 @@ import httpx
 from app.core.outbound import (
     DNSResolutionError,
     ProhibitedDestinationError,
+    ResponseBodyTooLargeError,
     create_safe_async_client,
     is_prohibited_ip,
+    parse_bounded_json,
 )
 
 from app.services.common import (
@@ -37,6 +39,8 @@ logger = logging.getLogger(__name__)
 CRTSH_URL: Final[str] = "https://crt.sh/"
 DEFAULT_TIMEOUT: Final[float] = 60.0
 MAX_RESULTS: Final[int] = 200
+MAX_CRTSH_RESPONSE_BYTES: Final[int] = 2 * 1024 * 1024  # 2 MB payload cap
+
 
 _SUBDOMAIN_RE: Final[re.Pattern[str]] = re.compile(
     r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$", re.IGNORECASE
@@ -141,16 +145,23 @@ async def _fetch_crtsh(
         if client is not None:
             response = await client.get(CRTSH_URL, params=params, headers=headers)
             response.raise_for_status()
-            data = response.json()
+            data = parse_bounded_json(response, max_bytes=MAX_CRTSH_RESPONSE_BYTES)
         else:
             async with create_safe_async_client(timeout=timeout) as safe_client:
                 response = await safe_client.get(CRTSH_URL, params=params, headers=headers)
                 response.raise_for_status()
-                data = response.json()
+                data = parse_bounded_json(response, max_bytes=MAX_CRTSH_RESPONSE_BYTES)
     except httpx.TimeoutException as exc:
         logger.warning("crt.sh query timed out for %s: %s", domain, exc)
         return [], ModuleScanError(code="PROVIDER_TIMEOUT", message=f"crt.sh query timed out: {exc}")
+    except ResponseBodyTooLargeError as exc:
+        logger.warning("crt.sh response payload exceeded maximum size for %s: %s", domain, exc)
+        return [], ModuleScanError(
+            code="PROVIDER_PAYLOAD_TOO_LARGE",
+            message=f"crt.sh response payload exceeded maximum size: {exc}",
+        )
     except httpx.HTTPStatusError as exc:
+
         logger.warning("crt.sh returned HTTP error for %s: %s", domain, exc)
         return [], ModuleScanError(
             code="PROVIDER_ERROR",

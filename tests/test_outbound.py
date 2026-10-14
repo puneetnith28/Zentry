@@ -443,3 +443,34 @@ async def test_safe_stream_reader_context_manager():
         assert b"".join(chunks) == b"safe streaming content"
         assert reader.bytes_read == len(b"safe streaming content")
 
+
+def test_parse_bounded_json_valid():
+    import httpx
+    from app.core.outbound import parse_bounded_json
+
+    res = httpx.Response(200, json={"status": "ok", "count": 42})
+    data = parse_bounded_json(res, max_bytes=1024)
+    assert data == {"status": "ok", "count": 42}
+
+
+def test_parse_bounded_json_oversized_content_length():
+    import httpx
+    from app.core.outbound import parse_bounded_json, ResponseBodyTooLargeError
+
+    res = httpx.Response(200, headers={"content-length": "2000"}, json={"foo": "bar"})
+    with pytest.raises(ResponseBodyTooLargeError) as exc_info:
+        parse_bounded_json(res, max_bytes=1000)
+    assert "Content-Length 2000 exceeds JSON parsing limit of 1000 bytes" in str(exc_info.value)
+
+
+def test_parse_bounded_json_oversized_body():
+    import httpx
+    from app.core.outbound import parse_bounded_json, ResponseBodyTooLargeError
+
+    res = httpx.Response(200, content=b"[" + (b'"item",' * 500) + b'"last"]')
+    del res.headers["content-length"]
+    with pytest.raises(ResponseBodyTooLargeError) as exc_info:
+        parse_bounded_json(res, max_bytes=100)
+    assert "exceeds JSON parsing limit of 100 bytes" in str(exc_info.value)
+
+

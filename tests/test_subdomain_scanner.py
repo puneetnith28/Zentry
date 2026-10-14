@@ -413,3 +413,35 @@ async def test_discover_subdomains_blocks_prohibited_ip_target():
     result = await discover_subdomains_async("127.0.0.1")
     assert result["status"] == "error"
     assert result["error"]["code"] == "PROHIBITED_DESTINATION"
+
+
+@pytest.mark.asyncio
+async def test_discover_subdomains_oversized_payload(monkeypatch):
+    import httpx
+    from app.services.subdomain import discover_subdomains_async, MAX_CRTSH_RESPONSE_BYTES
+
+    # Mock response exceeding MAX_CRTSH_RESPONSE_BYTES
+    large_content = b"[" + (b'{"name_value":"a.example.com"},' * 100000) + b'{"name_value":"b.example.com"}]'
+    # Ensure it's larger than limit
+    oversized = b"A" * (MAX_CRTSH_RESPONSE_BYTES + 1024)
+
+    class FakeOversizedResponse:
+        status_code = 200
+        content = oversized
+        headers = {"content-length": str(len(oversized))}
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            # should not be called
+            raise AssertionError("json() should not be called on oversized response")
+
+    async def fake_get(*args, **kwargs):
+        return FakeOversizedResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    result = await discover_subdomains_async("example.com")
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_PAYLOAD_TOO_LARGE"
+    assert "exceeded maximum size" in result["error"]["message"]
