@@ -24,6 +24,9 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=300,
     task_soft_time_limit=270,
+    worker_prefetch_multiplier=settings.celery_worker_prefetch_multiplier,
+    worker_max_tasks_per_child=settings.celery_worker_max_tasks_per_child,
+    worker_concurrency=settings.celery_worker_concurrency,
     beat_schedule={
         "recover-stale-scans-every-minute": {
             "task": "app.worker.tasks.recover_stale_scans_task",

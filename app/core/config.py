@@ -130,6 +130,24 @@ class Settings(BaseSettings):
         default="/tmp/zentry_report_cache",
         description="Directory path for private, non-public cached PDF reports.",
     )
+    celery_worker_concurrency: int = Field(
+        default=4,
+        ge=1,
+        le=32,
+        description="Fixed Celery worker concurrency level.",
+    )
+    celery_worker_prefetch_multiplier: int = Field(
+        default=1,
+        ge=1,
+        le=10,
+        description="Worker task prefetch multiplier (1 for strict fair distribution).",
+    )
+    celery_worker_max_tasks_per_child: int = Field(
+        default=50,
+        ge=1,
+        description="Worker child process task recycling limit to prevent memory leaks.",
+    )
+
 
 
 @lru_cache

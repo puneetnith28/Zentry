@@ -330,3 +330,18 @@ def test_stale_scan_recovery_preserves_valid_running_jobs(db_session):
     db_session.refresh(job)
     assert job.status == ScanStatusEnum.RUNNING
     assert job.finished_at is None
+
+
+def test_celery_worker_concurrency_and_prefetch_limits():
+    """Verify Celery configuration enforces bounded concurrency, prefetch=1, and max_tasks_per_child."""
+    from app.core.celery_app import celery_app
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    assert celery_app.conf.worker_prefetch_multiplier == 1
+    assert celery_app.conf.worker_prefetch_multiplier == settings.celery_worker_prefetch_multiplier
+    assert celery_app.conf.worker_max_tasks_per_child == 50
+    assert celery_app.conf.worker_max_tasks_per_child == settings.celery_worker_max_tasks_per_child
+    assert celery_app.conf.worker_concurrency == 4
+    assert celery_app.conf.worker_concurrency == settings.celery_worker_concurrency
+
