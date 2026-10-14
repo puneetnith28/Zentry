@@ -345,3 +345,25 @@ def test_celery_worker_concurrency_and_prefetch_limits():
     assert celery_app.conf.worker_concurrency == 4
     assert celery_app.conf.worker_concurrency == settings.celery_worker_concurrency
 
+
+def test_celery_broker_redis_socket_timeouts_and_connection_pool():
+    """Verify Celery Redis broker and backend transport options configure bounded socket timeouts and pooling."""
+    from app.core.celery_app import celery_app
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    b_opts = celery_app.conf.broker_transport_options
+    assert b_opts is not None
+    assert b_opts["socket_timeout"] == settings.redis_socket_timeout
+    assert b_opts["socket_connect_timeout"] == settings.redis_socket_connect_timeout
+    assert b_opts["max_connections"] == settings.redis_max_connections
+    assert b_opts["retry_on_timeout"] is True
+
+    r_opts = celery_app.conf.result_backend_transport_options
+    assert r_opts is not None
+    assert r_opts["socket_timeout"] == settings.redis_socket_timeout
+    assert r_opts["socket_connect_timeout"] == settings.redis_socket_connect_timeout
+    assert r_opts["max_connections"] == settings.redis_max_connections
+    assert r_opts["retry_on_timeout"] is True
+
+

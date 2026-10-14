@@ -27,6 +27,18 @@ celery_app.conf.update(
     worker_prefetch_multiplier=settings.celery_worker_prefetch_multiplier,
     worker_max_tasks_per_child=settings.celery_worker_max_tasks_per_child,
     worker_concurrency=settings.celery_worker_concurrency,
+    broker_transport_options={
+        "socket_timeout": settings.redis_socket_timeout,
+        "socket_connect_timeout": settings.redis_socket_connect_timeout,
+        "max_connections": settings.redis_max_connections,
+        "retry_on_timeout": True,
+    },
+    result_backend_transport_options={
+        "socket_timeout": settings.redis_socket_timeout,
+        "socket_connect_timeout": settings.redis_socket_connect_timeout,
+        "max_connections": settings.redis_max_connections,
+        "retry_on_timeout": True,
+    },
     beat_schedule={
         "recover-stale-scans-every-minute": {
             "task": "app.worker.tasks.recover_stale_scans_task",
@@ -42,7 +54,11 @@ def get_queue_depth(queue_name: str = "celery") -> int:
     broker_url = current_settings.celery_broker_url
     if broker_url.startswith("redis://"):
         try:
-            r = redis.Redis.from_url(broker_url, socket_timeout=2.0)
+            r = redis.Redis.from_url(
+                broker_url,
+                socket_timeout=current_settings.redis_socket_timeout,
+                socket_connect_timeout=current_settings.redis_socket_connect_timeout,
+            )
             depth = r.llen(queue_name)
             r.close()
             return int(depth)

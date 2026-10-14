@@ -147,6 +147,22 @@ class Settings(BaseSettings):
         ge=1,
         description="Worker child process task recycling limit to prevent memory leaks.",
     )
+    redis_socket_timeout: float = Field(
+        default=5.0,
+        ge=1.0,
+        description="Socket read/write timeout in seconds for Redis operations.",
+    )
+    redis_socket_connect_timeout: float = Field(
+        default=5.0,
+        ge=1.0,
+        description="Socket connection timeout in seconds for Redis operations.",
+    )
+    redis_max_connections: int = Field(
+        default=50,
+        ge=5,
+        description="Maximum client connections for Redis connection pool.",
+    )
+
 
 
 
