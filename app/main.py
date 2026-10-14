@@ -12,6 +12,14 @@ from app.db.session import init_db
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    try:
+        from app.worker.tasks import recover_stale_scans
+
+        recover_stale_scans()
+    except Exception as exc:
+        import logging
+
+        logging.getLogger(__name__).warning("Failed to recover stale scans on startup: %s", exc)
     yield
 
 

@@ -24,6 +24,12 @@ celery_app.conf.update(
     task_track_started=True,
     task_time_limit=300,
     task_soft_time_limit=270,
+    beat_schedule={
+        "recover-stale-scans-every-minute": {
+            "task": "app.worker.tasks.recover_stale_scans_task",
+            "schedule": 60.0,
+        },
+    },
 )
 
 

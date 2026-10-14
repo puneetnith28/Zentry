@@ -36,6 +36,11 @@ def classify_worker_exception(exc: BaseException) -> tuple[str, str]:
             "POLICY_BLOCKED",
             "Target destination is prohibited by outbound security policy",
         )
+    if isinstance(exc, StaleJobTimeoutError):
+        return (
+            "STALE_JOB_TIMEOUT",
+            "Scan exceeded maximum execution duration without worker progress",
+        )
     if isinstance(exc, SoftTimeLimitExceeded):
         return (
             "NETWORK_TIMEOUT",
@@ -65,6 +70,10 @@ class ScanCancelledError(Exception):
     """Raised when a scan is aborted due to user cancellation."""
 
 
+class StaleJobTimeoutError(Exception):
+    """Raised or referenced when a scan job exceeds maximum allowed wall-clock age without progress."""
+
+
 TRANSIENT_EXCEPTIONS = (
     OperationalError,
     DBAPIError,
@@ -75,6 +84,7 @@ NON_RETRYABLE_EXCEPTIONS = (
     TargetValidationError,
     SoftTimeLimitExceeded,
     ScanCancelledError,
+    StaleJobTimeoutError,
     asyncio.TimeoutError,
     TimeoutError,
 )
@@ -336,3 +346,108 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
         # Always clean up the database connection if created here
         if own_session and db is not None:
             db.close()
+
+
+def recover_stale_scans(
+    max_age_seconds: float | None = None,
+    max_pending_age_seconds: float | None = None,
+    db: Session | None = None,
+) -> int:
+    """Detect and recover orphaned/zombie scans stuck in active states past their deadline.
+
+    Scans in RUNNING state older than max_age_seconds (computed from started_at,
+    or created_at if started_at is missing) are transitioned to FAILED with
+    STALE_JOB_TIMEOUT error code.
+
+    Scans in PENDING state older than max_pending_age_seconds (computed from created_at)
+    are also transitioned to FAILED, releasing user active scan concurrency quotas.
+
+    Args:
+        max_age_seconds: Maximum allowed seconds for a RUNNING scan before marking stale.
+            Defaults to settings.stale_scan_threshold_seconds.
+        max_pending_age_seconds: Maximum allowed seconds for a PENDING scan before marking stale.
+            Defaults to max_age_seconds * 2.
+        db: Optional database session. If None, a dedicated SessionLocal is created and closed.
+
+    Returns:
+        The total number of stale scans recovered.
+    """
+    settings = get_settings()
+    if max_age_seconds is None:
+        max_age_seconds = getattr(settings, "stale_scan_threshold_seconds", 300.0)
+    if max_pending_age_seconds is None:
+        max_pending_age_seconds = max_age_seconds * 2.0
+
+    own_session = False
+    if db is None:
+        db = SessionLocal()
+        own_session = True
+
+    recovered_count = 0
+    now = datetime.now(timezone.utc)
+    try:
+        query = db.query(ScanJob).filter(
+            ScanJob.status.in_([ScanStatusEnum.RUNNING, ScanStatusEnum.PENDING])
+        )
+        try:
+            candidates = query.with_for_update(skip_locked=True).all()
+        except Exception:
+            candidates = query.all()
+
+        for job in candidates:
+            recovered = False
+            if job.status == ScanStatusEnum.RUNNING:
+                ref_time = job.started_at or job.created_at
+                if ref_time is not None:
+                    if ref_time.tzinfo is None:
+                        ref_time = ref_time.replace(tzinfo=timezone.utc)
+                    age = (now - ref_time).total_seconds()
+                    if age >= max_age_seconds:
+                        if job.can_transition_to(ScanStatusEnum.FAILED):
+                            job.transition_to(ScanStatusEnum.FAILED, timestamp=now)
+                            job.error_message = (
+                                f"[STALE_JOB_TIMEOUT] Scan exceeded maximum wall-clock execution threshold of "
+                                f"{int(max_age_seconds)}s and was marked failed by recovery"
+                            )
+                            recovered = True
+            elif job.status == ScanStatusEnum.PENDING:
+                ref_time = job.created_at
+                if ref_time is not None:
+                    if ref_time.tzinfo is None:
+                        ref_time = ref_time.replace(tzinfo=timezone.utc)
+                    age = (now - ref_time).total_seconds()
+                    if age >= max_pending_age_seconds:
+                        if job.can_transition_to(ScanStatusEnum.FAILED):
+                            job.transition_to(ScanStatusEnum.FAILED, timestamp=now)
+                            job.error_message = (
+                                f"[STALE_JOB_TIMEOUT] Scan exceeded maximum queue wait threshold of "
+                                f"{int(max_pending_age_seconds)}s and was marked failed by recovery"
+                            )
+                            recovered = True
+
+            if recovered:
+                recovered_count += 1
+
+        if recovered_count > 0:
+            db.commit()
+            logger.info("Recovered %d stale scan(s)", recovered_count)
+    except Exception as exc:
+        logger.error("Error during stale scan recovery: %s", exc)
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        raise
+    finally:
+        if own_session and db is not None:
+            db.close()
+
+    return recovered_count
+
+
+@celery_app.task(name="app.worker.tasks.recover_stale_scans_task")
+def recover_stale_scans_task() -> int:
+    """Periodic Celery task for recovering orphaned/stale scans."""
+    return recover_stale_scans()
+

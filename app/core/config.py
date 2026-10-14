@@ -95,6 +95,11 @@ class Settings(BaseSettings):
         default=60.0,
         description="Hard wall-clock timeout in seconds for an individual scanner module.",
     )
+    stale_scan_threshold_seconds: float = Field(
+        default=300.0,
+        ge=60.0,
+        description="Wall-clock threshold in seconds after which active scans are considered orphaned and recovered as FAILED.",
+    )
     max_queue_depth: int = Field(
         default=100,
         description="Maximum Celery queue depth threshold before rejecting submissions with 503 backpressure.",
