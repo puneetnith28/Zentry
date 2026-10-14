@@ -77,3 +77,66 @@ def test_env_example_matches_settings():
     ]
     for key in required_keys:
         assert f"{key}=" in content, f"Key {key} missing from .env.example"
+
+
+@pytest.mark.security
+def test_production_security_validation_rejects_default_jwt_secret():
+    from app.core.config import Settings, validate_production_security, DEFAULT_INSECURE_JWT_SECRET
+
+    settings = Settings(
+        environment="production",
+        jwt_secret_key=DEFAULT_INSECURE_JWT_SECRET,
+        database_url="postgresql://scanner_user:SuperStrongProdPass123!@db:5432/security_scanner",
+    )
+    with pytest.raises(ValueError, match="Default development JWT secret key is strictly prohibited in production"):
+        validate_production_security(settings)
+
+
+@pytest.mark.security
+def test_production_security_validation_rejects_short_jwt_secret():
+    from app.core.config import Settings, validate_production_security
+
+    settings = Settings(
+        environment="production",
+        jwt_secret_key="too-short",
+        database_url="postgresql://scanner_user:SuperStrongProdPass123!@db:5432/security_scanner",
+    )
+    with pytest.raises(ValueError, match="must be at least 32 characters"):
+        validate_production_security(settings)
+
+
+@pytest.mark.security
+def test_production_security_validation_rejects_default_db_password():
+    from app.core.config import Settings, validate_production_security
+
+    settings = Settings(
+        environment="production",
+        jwt_secret_key="a" * 32,
+        database_url="postgresql://postgres:securepassword123@db:5432/security_scanner",
+    )
+    with pytest.raises(ValueError, match="Default database password 'securepassword123' is strictly prohibited"):
+        validate_production_security(settings)
+
+
+@pytest.mark.security
+def test_production_security_validation_passes_valid_prod_config():
+    from app.core.config import Settings, validate_production_security
+
+    settings = Settings(
+        environment="production",
+        jwt_secret_key="a-very-secure-random-32-byte-production-secret-token",
+        database_url="postgresql://prod_user:SuperSafePassword2026!@prod-db.internal:5432/prod_scanner",
+    )
+    # Should not raise
+    validate_production_security(settings)
+
+
+def test_development_allows_dev_defaults():
+    from app.core.config import Settings, validate_production_security
+
+    settings = Settings(
+        environment="development",
+    )
+    # Should not raise in development
+    validate_production_security(settings)
+

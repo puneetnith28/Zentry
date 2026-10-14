@@ -170,11 +170,50 @@ class Settings(BaseSettings):
         default="INFO",
         description="Application logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     )
+    environment: str = Field(
+        default="development",
+        description="Deployment environment: 'development', 'staging', 'production', 'test'.",
+    )
+    trusted_proxies: list[str] = Field(
+        default=["127.0.0.1", "::1"],
+        description="Trusted reverse proxy IP addresses or CIDR blocks allowed to provide forwarded headers.",
+    )
 
 
+DEFAULT_INSECURE_JWT_SECRET = "zentry-dev-insecure-secret-key-change-in-production"
+DEFAULT_INSECURE_DB_PASSWORD = "securepassword123"
 
+
+def validate_production_security(settings: Settings) -> None:
+    """
+    Validates security constraints for production deployments.
+    Fails fast if insecure defaults or weak secrets are detected when running in production.
+    """
+    env = (settings.environment or "").strip().lower()
+    if env == "production":
+        # 1. Validate JWT Secret Key
+        if settings.jwt_secret_key == DEFAULT_INSECURE_JWT_SECRET:
+            raise ValueError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: "
+                "Default development JWT secret key is strictly prohibited in production. "
+                "Configure a secure JWT_SECRET_KEY."
+            )
+        if len(settings.jwt_secret_key) < 32:
+            raise ValueError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: "
+                "JWT_SECRET_KEY must be at least 32 characters in production."
+            )
+
+        # 2. Validate Database Credentials
+        if DEFAULT_INSECURE_DB_PASSWORD in settings.database_url:
+            raise ValueError(
+                "CRITICAL SECURITY CONFIGURATION ERROR: "
+                "Default database password 'securepassword123' is strictly prohibited in production. "
+                "Configure a secure DATABASE_URL."
+            )
 
 
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
+
