@@ -7,9 +7,10 @@ IP classification, safe DNS resolution, and pinned connections.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import ipaddress
 import socket
-from typing import Final
+from typing import AsyncIterator, Final
 from urllib.parse import urljoin, urlparse
 
 import httpcore
@@ -457,3 +458,56 @@ async def safe_request(
     finally:
         if close_client:
             await client.aclose()
+
+
+@asynccontextmanager
+async def safe_stream_request(
+    method: str,
+    url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
+    max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
+    **kwargs,
+) -> AsyncIterator[httpx.Response]:
+    """Perform a streaming outbound HTTP request with strict safe destination validation.
+
+    Guarantees:
+    - Pre-connection DNS evaluation and IP destination policy validation.
+    - Response headers and status line are read without buffering response body.
+    - Content-Length header is checked against max_response_bytes before streaming.
+    - Exiting the context block immediately closes the response stream.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise SafeRedirectError(f"Unsupported scheme '{parsed.scheme}' in URL: {url}")
+    if not parsed.hostname:
+        raise SafeRedirectError(f"Missing hostname in URL: {url}")
+
+    default_port = 443 if parsed.scheme == "https" else 80
+    port = parsed.port or default_port
+    resolve_public_target(parsed.hostname, port)
+
+    close_client = False
+    if client is None:
+        client = create_safe_async_client(timeout=timeout)
+        close_client = True
+
+    try:
+        async with client.stream(
+            method=method,
+            url=url,
+            **kwargs,
+        ) as response:
+            if max_response_bytes is not None:
+                cl_header = response.headers.get("content-length")
+                if cl_header and cl_header.strip().isdigit():
+                    if int(cl_header.strip()) > max_response_bytes:
+                        raise ResponseBodyTooLargeError(
+                            f"Response Content-Length {cl_header} exceeds limit of {max_response_bytes} bytes"
+                        )
+            yield response
+    finally:
+        if close_client:
+            await client.aclose()
+

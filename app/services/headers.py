@@ -20,6 +20,7 @@ from app.core.outbound import (
     ProhibitedDestinationError,
     ResponseBodyTooLargeError,
     safe_request,
+    safe_stream_request,
 )
 from app.services.common import (
     Finding,
@@ -207,15 +208,18 @@ async def inspect_headers_async(
     try:
         # We don't follow redirects here because we want to analyze the exact endpoint requested.
         # Often, a redirect itself is missing security headers before sending you to the secure site.
-        # Outbound gateway enforces IP policy, DNS pinning, and byte limits.
-        response = await safe_request(
+        # We stream the request so only HTTP headers are inspected without buffering response body.
+        async with safe_stream_request(
             method="GET",
             url=url,
             client=client,
             follow_redirects=False,
             timeout=timeout,
             max_response_bytes=DEFAULT_HEADERS_MAX_RESPONSE_BYTES,
-        )
+        ) as response:
+            status_code = response.status_code
+            headers = dict(response.headers)
+            cookies = _parse_cookies(response)
     except (ProhibitedDestinationError, DNSResolutionError) as exc:
         return HeadersScanResult(
             status=ModuleScanStatus.ERROR,
@@ -235,14 +239,12 @@ async def inspect_headers_async(
             error=ModuleScanError(code="REQUEST_FAILED", message=str(exc)),
         ).to_dict()
 
-    headers = dict(response.headers)
-    cookies = _parse_cookies(response)
     findings = _analyze_headers(headers, cookies, is_https=is_https)
 
     return HeadersScanResult(
         status=ModuleScanStatus.SUCCESS,
         target=url,
-        status_code=response.status_code,
+        status_code=status_code,
         headers={k: v for k, v in headers.items()},
         cookies=cookies,
         findings=findings,

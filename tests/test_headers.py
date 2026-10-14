@@ -85,3 +85,35 @@ async def test_inspect_headers_async_enforces_byte_limits():
         result = await inspect_headers_async("https://example.com", client=client)
         assert result["status"] == "error"
         assert result["error"]["code"] == "RESPONSE_TOO_LARGE"
+
+
+@pytest.mark.asyncio
+async def test_inspect_headers_async_streams_without_buffering_body():
+    from app.services.headers import inspect_headers_async
+
+    chunks_consumed = []
+
+    class MockAsyncStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for i in range(100):
+                chunks_consumed.append(i)
+                yield b"X" * 1024 * 1024
+
+    async def mock_handler(request: httpx.Request):
+        return httpx.Response(
+            200,
+            headers={
+                "server": "Apache/2.4.41",
+                "x-frame-options": "DENY",
+            },
+            stream=MockAsyncStream(),
+        )
+
+    transport = httpx.MockTransport(mock_handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        result = await inspect_headers_async("https://example.com", client=client)
+        assert result["status"] == "success"
+        assert result["status_code"] == 200
+        assert result["headers"]["x-frame-options"] == "DENY"
+        assert chunks_consumed == []
+
