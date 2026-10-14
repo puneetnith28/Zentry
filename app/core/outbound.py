@@ -126,6 +126,12 @@ def is_prohibited_ip(
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         return is_prohibited_ip(ip.ipv4_mapped)
 
+    # Check standard NAT64 translation prefix (64:ff9b::/96) RFC 6052
+    # Allows IPv6-only networks to reach public IPv4 Internet through NAT64
+    if isinstance(ip, ipaddress.IPv6Address) and ip in ipaddress.IPv6Network("64:ff9b::/96"):
+        embedded_ipv4 = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        return is_prohibited_ip(embedded_ipv4)
+
     # Standard built-in classification flags
     if (
         ip.is_private

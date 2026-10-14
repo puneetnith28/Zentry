@@ -1,259 +1,135 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { EmptyState } from '@/components/scan-history/EmptyState'
-import { HistoryCard, type HistoryEntry } from '@/components/scan-history/HistoryCard'
-import { HistoryTable } from '@/components/scan-history/HistoryTable'
-import { Button } from '@/components/ui/Button'
 import { useScan } from '@/hooks/useScans'
 import { getRecentScans, type RecentScanEntry } from '@/utils/recentScans'
-import { cn } from '@/utils/cn'
-import {
-  calculateRiskScore,
-  riskScoreLabel,
-  riskScoreTone,
-} from '@/utils/scanResults'
-import type { ScanDetailResponse, ScanStatus } from '@/types/scan'
+import { calculateRiskScore, riskScoreLabel } from '@/utils/scanResults'
+import { formatDateTime, truncateId } from '@/utils/format'
 
-/* ------------------------------------------------------------------ */
-/* Per-entry data fetcher (enriches localStorage stub with live data)  */
-/* ------------------------------------------------------------------ */
+function HistoryRow({ entry }: { entry: RecentScanEntry }) {
+  const { data } = useScan(entry.scanId)
+  const status = data?.status ?? 'PENDING'
 
-function useEnrichedEntry(recent: RecentScanEntry): HistoryEntry {
-  const { data } = useScan(recent.scanId)
+  const risk = useMemo(() => {
+    if (!data?.result?.summary) return { label: 'PENDING', score: 0 }
+    const score = calculateRiskScore(data.result.summary)
+    return { label: riskScoreLabel(score), score }
+  }, [data])
 
-  return useMemo(() => {
-    if (!data) {
-      return {
-        scanId: recent.scanId,
-        targetUrl: recent.targetUrl,
-        createdAt: recent.createdAt,
-        status: 'PENDING' as ScanStatus,
-        riskLabel: null,
-        riskTone: null,
-      }
-    }
-
-    return enrichEntry(data)
-  }, [data, recent])
+  return (
+    <tr className="border-b-2 border-black hover:bg-[#bce7fd]/30 font-mono text-xs">
+      <td className="p-3 border-r-2 border-black font-bold">
+        {truncateId(entry.scanId)}
+      </td>
+      <td className="p-3 border-r-2 border-black font-bold text-black underline">
+        <Link to={`/scans/${entry.scanId}`}>{data?.target_url ?? entry.targetUrl}</Link>
+      </td>
+      <td className="p-3 border-r-2 border-black">
+        <span
+          className={`border border-black px-2 py-0.5 font-black uppercase text-black brutal-shadow-sm ${
+            status === 'COMPLETED' ? 'bg-[#8cf0ba]' : status === 'FAILED' ? 'bg-[#ff9de2]' : 'bg-[#fff37a]'
+          }`}
+        >
+          {status}
+        </span>
+      </td>
+      <td className="p-3 border-r-2 border-black font-bold">
+        <span className="border border-black bg-white px-2 py-0.5 brutal-shadow-sm">
+          {risk.label} ({risk.score}/100)
+        </span>
+      </td>
+      <td className="p-3 border-r-2 border-black text-slate-600">
+        {formatDateTime(entry.createdAt)}
+      </td>
+      <td className="p-3 text-right">
+        <Link
+          to={`/scans/${entry.scanId}`}
+          className="border border-black bg-[#fff37a] px-3 py-1 font-bold text-black brutal-shadow-sm hover:bg-[#ffea40]"
+        >
+          VIEW RECEIPT ↗
+        </Link>
+      </td>
+    </tr>
+  )
 }
-
-function enrichEntry(scan: ScanDetailResponse): HistoryEntry {
-  let riskLabel: string | null = null
-  let riskTone: HistoryEntry['riskTone'] = null
-
-  if (scan.result?.summary) {
-    const score = calculateRiskScore(scan.result.summary)
-    riskLabel = riskScoreLabel(score)
-    riskTone = riskScoreTone(score)
-  }
-
-  return {
-    scanId: scan.scan_id,
-    targetUrl: scan.target_url,
-    createdAt: scan.created_at,
-    status: scan.status,
-    riskLabel,
-    riskTone,
-  }
-}
-
-/* ------------------------------------------------------------------ */
-/* Wrapper to render each enriched row                                 */
-/* ------------------------------------------------------------------ */
-
-function EnrichedTableRow({ recent, onEntry }: { recent: RecentScanEntry; onEntry: (e: HistoryEntry) => void }) {
-  const entry = useEnrichedEntry(recent)
-  // Push entry up so parent can collect them for the table
-  useMemo(() => onEntry(entry), [entry, onEntry])
-  return null
-}
-
-/* ------------------------------------------------------------------ */
-/* Page                                                                */
-/* ------------------------------------------------------------------ */
-
-const ITEMS_PER_PAGE = 8
 
 export function ScanHistoryPage() {
+  const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED'>('ALL')
   const recentScans = getRecentScans()
-  const [page, setPage] = useState(0)
 
-  // Collect enriched entries
-  const [entriesMap, setEntriesMap] = useState<Map<string, HistoryEntry>>(new Map())
-
-  const handleEntry = useMemo(
-    () => (entry: HistoryEntry) => {
-      setEntriesMap((prev) => {
-        const existing = prev.get(entry.scanId)
-        // Avoid re-render if data hasn't changed
-        if (
-          existing &&
-          existing.status === entry.status &&
-          existing.riskLabel === entry.riskLabel
-        ) {
-          return prev
-        }
-        const next = new Map(prev)
-        next.set(entry.scanId, entry)
-        return next
-      })
-    },
-    [],
-  )
-
-  // Order entries matching the localStorage order
-  const orderedEntries = useMemo(() => {
+  const filtered = useMemo(() => {
+    if (filter === 'ALL') return recentScans
     return recentScans
-      .map((r) => entriesMap.get(r.scanId))
-      .filter(Boolean) as HistoryEntry[]
-  }, [recentScans, entriesMap])
-
-  // Pagination
-  const totalPages = Math.max(1, Math.ceil(orderedEntries.length / ITEMS_PER_PAGE))
-  const paginatedEntries = orderedEntries.slice(
-    page * ITEMS_PER_PAGE,
-    (page + 1) * ITEMS_PER_PAGE,
-  )
-
-  const isEmpty = recentScans.length === 0
+  }, [filter, recentScans])
 
   return (
-    <main className="mx-auto max-w-6xl space-y-6 animate-fade-in">
-      {/* Render hooks to enrich each entry */}
-      {recentScans.map((r) => (
-        <EnrichedTableRow key={r.scanId} recent={r} onEntry={handleEntry} />
-      ))}
+    <div className="min-h-screen bg-[#fffdf5] px-4 py-12 sm:px-8">
+      <div className="mx-auto max-w-6xl space-y-8">
+        {/* Header */}
+        <div className="flex flex-wrap items-baseline justify-between gap-4 border-b-2 border-black pb-6">
+          <div>
+            <span className="border-2 border-black bg-[#ff9de2] px-3 py-1 font-mono text-xs font-black uppercase text-black brutal-shadow-sm">
+              HISTORICAL AUDIT ARCHIVE
+            </span>
+            <h1 className="mt-3 font-mono text-4xl font-black text-black sm:text-5xl">
+              RECORDED SESSIONS.
+            </h1>
+            <p className="mt-2 font-sans text-sm font-medium text-slate-700">
+              Deterministic verification runs stored immutably with full raw diagnostic snapshots.
+            </p>
+          </div>
 
-      {/* Page header */}
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.2em] text-cyan-500/80">
-            History
-          </p>
-          <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-100 sm:text-3xl">
-            Scan History
-          </h1>
-          <p className="mt-1 text-sm text-slate-500">
-            {isEmpty
-              ? 'No scans recorded yet'
-              : `${orderedEntries.length} scan${orderedEntries.length !== 1 ? 's' : ''} on file`}
-          </p>
+          <Link
+            to="/scans/new"
+            className="inline-flex items-center gap-2 border-2 border-black bg-[#fff37a] px-5 py-3 font-mono text-xs font-black uppercase tracking-wider text-black brutal-shadow hover:bg-[#ffea40] active:translate-x-1 active:translate-y-1"
+          >
+            <span>+ NEW VERIFICATION</span>
+            <span className="text-base font-black">↗</span>
+          </Link>
         </div>
-        <Link to="/scans/new">
-          <Button>
-            <PlusIcon className="size-4" />
-            New Scan
-          </Button>
-        </Link>
-      </header>
 
-      {isEmpty ? (
-        <EmptyState />
-      ) : (
-        <>
-          {/* Loading skeleton while entries are still enriching */}
-          {orderedEntries.length === 0 && (
-            <div className="space-y-3">
-              {Array.from({ length: 3 }).map((_, i) => (
-                <div
-                  key={i}
-                  className="h-16 animate-pulse rounded-xl bg-surface-800/60 border border-slate-800/40"
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Desktop table (hidden on mobile) */}
-          {orderedEntries.length > 0 && (
-            <div className="hidden md:block">
-              <HistoryTable entries={paginatedEntries} />
-            </div>
-          )}
-
-          {/* Mobile cards (hidden on desktop) */}
-          {orderedEntries.length > 0 && (
-            <div className="grid gap-4 sm:grid-cols-2 md:hidden">
-              {paginatedEntries.map((entry, idx) => (
-                <HistoryCard
-                  key={entry.scanId}
-                  entry={entry}
-                  className="finding-card-enter"
-                  style={{ animationDelay: `${idx * 80}ms` }}
-                />
-              ))}
-            </div>
-          )}
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <nav
-              className="flex items-center justify-center gap-2 pt-2"
-              aria-label="Scan history pagination"
+        {/* Filters */}
+        <div className="flex gap-2 font-mono text-xs font-bold">
+          {(['ALL', 'COMPLETED', 'FAILED'] as const).map((mode) => (
+            <button
+              type="button"
+              key={mode}
+              onClick={() => setFilter(mode)}
+              className={`border-2 border-black px-4 py-2 uppercase brutal-shadow-sm transition ${
+                filter === mode ? 'bg-black text-white' : 'bg-white text-black hover:bg-slate-100'
+              }`}
             >
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={page === 0}
-                className={cn(
-                  'rounded-lg border border-slate-700/50 bg-surface-800/60 px-3 py-1.5 text-xs font-medium text-slate-300',
-                  'transition hover:bg-surface-700/60 hover:text-white',
-                  'disabled:opacity-40 disabled:pointer-events-none',
-                )}
-              >
-                ← Prev
-              </button>
+              {mode} SESSIONS
+            </button>
+          ))}
+        </div>
 
-              {Array.from({ length: totalPages }).map((_, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  onClick={() => setPage(i)}
-                  className={cn(
-                    'size-8 rounded-lg text-xs font-semibold transition',
-                    i === page
-                      ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                      : 'text-slate-400 hover:bg-surface-800 hover:text-slate-200',
-                  )}
-                >
-                  {i + 1}
-                </button>
-              ))}
-
-              <button
-                type="button"
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={page >= totalPages - 1}
-                className={cn(
-                  'rounded-lg border border-slate-700/50 bg-surface-800/60 px-3 py-1.5 text-xs font-medium text-slate-300',
-                  'transition hover:bg-surface-700/60 hover:text-white',
-                  'disabled:opacity-40 disabled:pointer-events-none',
-                )}
-              >
-                Next →
-              </button>
-            </nav>
-          )}
-        </>
-      )}
-    </main>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/* Inline SVG icons                                                    */
-/* ------------------------------------------------------------------ */
-
-function PlusIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-      stroke="currentColor"
-      strokeWidth={2}
-      aria-hidden
-    >
-      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-    </svg>
+        {/* Audit Table */}
+        <div className="border-2 border-black bg-white brutal-shadow-lg overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b-2 border-black bg-[#fffdf5] font-mono text-xs font-black uppercase text-black">
+                <th className="p-3 border-r-2 border-black">SCAN ID</th>
+                <th className="p-3 border-r-2 border-black">TARGET URL</th>
+                <th className="p-3 border-r-2 border-black">STATUS</th>
+                <th className="p-3 border-r-2 border-black">RISK VERDICT</th>
+                <th className="p-3 border-r-2 border-black">TIMESTAMP</th>
+                <th className="p-3 text-right">ACTION</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center font-mono text-sm text-slate-600">
+                    NO RECORDED VERIFICATION SESSIONS FOUND.
+                  </td>
+                </tr>
+              ) : (
+                filtered.map((entry) => <HistoryRow key={entry.scanId} entry={entry} />)
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   )
 }
