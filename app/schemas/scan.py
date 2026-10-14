@@ -60,11 +60,14 @@ class ScanCreateResponse(BaseModel):
 
 
 class FindingSummary(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     critical: int = 0
     high: int = 0
     medium: int = 0
     low: int = 0
     info: int = 0
+    module_statuses: dict[str, str] = Field(default_factory=dict)
 
 
 class ScanResultPayload(BaseModel):
@@ -72,6 +75,7 @@ class ScanResultPayload(BaseModel):
     scanned_at: str
     modules: dict[str, Any] = Field(default_factory=dict)
     summary: FindingSummary = Field(default_factory=FindingSummary)
+    module_statuses: dict[str, str] = Field(default_factory=dict)
     risk_score: int | None = None
     risk_level: str | None = None
     score_version: str | None = None
@@ -102,6 +106,7 @@ class ScanSummaryItem(BaseModel):
     duration_seconds: float | None = None
     user_id: UUID | None = None
     summary: FindingSummary | None = None
+    module_statuses: dict[str, str] = Field(default_factory=dict)
     risk_score: int | None = None
     risk_level: str | None = None
     score_version: str | None = None

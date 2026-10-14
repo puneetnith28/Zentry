@@ -78,12 +78,14 @@ def list_scans(
     items: list[ScanSummaryItem] = []
     for job in jobs:
         summary: FindingSummary | None = None
+        module_statuses: dict[str, str] = {}
         risk_score: int | None = None
         risk_level: str | None = None
         score_version: str | None = None
         if job.result_payload:
             if "summary" in job.result_payload:
                 summary = FindingSummary(**job.result_payload["summary"])
+            module_statuses = job.result_payload.get("module_statuses") or (summary.module_statuses if summary else {})
             risk_score = job.result_payload.get("risk_score")
             risk_level = job.result_payload.get("risk_level")
             score_version = job.result_payload.get("score_version")
@@ -105,6 +107,7 @@ def list_scans(
                 duration_seconds=job.duration_seconds,
                 user_id=job.user_id,
                 summary=summary,
+                module_statuses=module_statuses,
                 risk_score=risk_score,
                 risk_level=risk_level,
                 score_version=score_version,
@@ -231,6 +234,7 @@ def get_scan(
             scanned_at=job.result_payload.get("scanned_at", ""),
             modules=job.result_payload.get("modules", {}),
             summary=summary_model,
+            module_statuses=job.result_payload.get("module_statuses") or summary_model.module_statuses,
             risk_score=risk_score,
             risk_level=risk_level,
             score_version=score_version,

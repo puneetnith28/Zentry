@@ -200,3 +200,85 @@ def test_calculate_risk_score_empty_and_edge_inputs():
     assert calculate_risk_score("invalid").score == 0
 
 
+def test_extract_module_statuses_mapping():
+    from app.services.common import extract_module_statuses
+
+    modules = {
+        "headers": {"status": "success", "findings": []},
+        "ssl": {
+            "status": "error",
+            "error": {"code": "MODULE_TIMEOUT", "message": "Timed out"},
+            "findings": [],
+        },
+        "ports": {
+            "status": "error",
+            "error": {"code": "POLICY_BLOCKED", "message": "Prohibited destination"},
+            "findings": [],
+        },
+        "tech": {
+            "status": "error",
+            "error": {"code": "PROHIBITED_IP", "message": "Private IP prohibited"},
+            "findings": [],
+        },
+        "subdomain": {
+            "status": "error",
+            "error": {"code": "DNS_ERROR", "message": "Resolution error"},
+            "findings": [],
+        },
+        "malformed": "not a dictionary",
+    }
+
+    statuses = extract_module_statuses(modules)
+    assert statuses == {
+        "headers": "SUCCESS",
+        "ssl": "TIMEOUT",
+        "ports": "BLOCKED",
+        "tech": "BLOCKED",
+        "subdomain": "ERROR",
+        "malformed": "ERROR",
+    }
+
+
+def test_failed_module_not_presented_as_clean():
+    """Verify that a module producing 0 findings due to failure is explicitly distinguished from clean status."""
+    from app.schemas.scan import FindingSummary, ScanResultPayload
+    from app.services.common import extract_module_statuses, summarize_findings
+
+    modules = {
+        "ports": {
+            "status": "error",
+            "error": {"code": "MODULE_TIMEOUT", "message": "Timed out"},
+            "findings": [],
+        },
+        "headers": {
+            "status": "success",
+            "findings": [],
+        },
+    }
+
+    summary_counts = summarize_findings(modules)
+    statuses = extract_module_statuses(modules)
+
+    # Both modules have 0 findings
+    assert summary_counts["critical"] == 0
+    assert summary_counts["high"] == 0
+
+    # But module_statuses explicitly distinguishes failure from success
+    assert statuses["ports"] == "TIMEOUT"
+    assert statuses["headers"] == "SUCCESS"
+
+    summary_model = FindingSummary(**summary_counts, module_statuses=statuses)
+    assert summary_model.module_statuses["ports"] == "TIMEOUT"
+    assert summary_model.module_statuses["headers"] == "SUCCESS"
+
+    payload = ScanResultPayload(
+        target="https://example.com",
+        scanned_at="2026-10-14T00:00:00Z",
+        modules=modules,
+        summary=summary_model,
+        module_statuses=statuses,
+    )
+    assert payload.module_statuses["ports"] == "TIMEOUT"
+
+
+

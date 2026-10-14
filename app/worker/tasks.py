@@ -16,7 +16,11 @@ from app.core.outbound import ProhibitedDestinationError
 from app.core.target_validation import TargetValidationError
 from app.db.models import ScanJob, ScanStatusEnum
 from app.db.session import SessionLocal
-from app.services.common import calculate_risk_score, summarize_findings
+from app.services.common import (
+    calculate_risk_score,
+    extract_module_statuses,
+    summarize_findings,
+)
 from app.services.headers import inspect_headers_async
 from app.services.ports import scan_ports_async
 from app.services.ssl import inspect_ssl_async
@@ -269,6 +273,8 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
 
             # Tally up the final score (critical, high, medium, etc.) and calculate canonical risk
             summary = summarize_findings(modules)
+            module_statuses = extract_module_statuses(modules)
+            summary["module_statuses"] = module_statuses
             risk = calculate_risk_score(summary)
 
             # Format the final JSON response for the database
@@ -277,6 +283,7 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
                 "scanned_at": datetime.now(timezone.utc).isoformat(),
                 "modules": modules,
                 "summary": summary,
+                "module_statuses": module_statuses,
                 "risk_score": risk.score,
                 "risk_level": risk.level,
                 "score_version": risk.version,

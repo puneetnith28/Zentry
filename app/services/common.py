@@ -250,3 +250,25 @@ def summarize_findings(modules: dict[str, Any]) -> dict[str, int]:
             if sev in counts:
                 counts[sev] += 1
     return counts
+
+
+def extract_module_statuses(modules: dict[str, Any]) -> dict[str, str]:
+    """Map each module name to its standardized execution status: 'SUCCESS', 'ERROR', 'BLOCKED', 'TIMEOUT'."""
+    statuses: dict[str, str] = {}
+    for name, data in modules.items():
+        if not isinstance(data, dict):
+            statuses[name] = "ERROR"
+            continue
+        mod_status = str(data.get("status", "")).lower()
+        if mod_status == "success":
+            statuses[name] = "SUCCESS"
+        else:
+            err = data.get("error") or {}
+            err_code = str(err.get("code", "")).upper() if isinstance(err, dict) else ""
+            if "TIMEOUT" in err_code:
+                statuses[name] = "TIMEOUT"
+            elif "PROHIBITED" in err_code or "BLOCKED" in err_code:
+                statuses[name] = "BLOCKED"
+            else:
+                statuses[name] = "ERROR"
+    return statuses
