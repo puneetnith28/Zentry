@@ -39,9 +39,11 @@ def get_scan_pdf(
             target_url=job.target_url,
         )
     except Exception as e:
+        import logging
+        logging.getLogger(__name__).exception("Failed to generate PDF report for scan %s: %s", scan_id, e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e),
+            detail="Failed to generate PDF report.",
         )
     filename = f"zentry-report-{scan_id}.pdf"
     return Response(

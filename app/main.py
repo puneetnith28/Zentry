@@ -140,7 +140,12 @@ app.add_middleware(
 async def http_exception_handler(request: Request, exc: HTTPException | StarletteHTTPException):
     req_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     code = STATUS_CODE_TO_ERROR_CODE.get(exc.status_code, "ERROR")
-    message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    raw_message = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    if exc.status_code >= 500:
+        logger.error("Server error (%s) on %s [request_id=%s]: %s", exc.status_code, request.url.path, req_id, raw_message)
+        message = raw_message if not any(kw in raw_message.lower() for kw in ("traceback", "file \"", "exception", "syntaxerror", "sqlalchemy")) else "An internal server error occurred."
+    else:
+        message = raw_message
     content = {
         "detail": message,
         "error": {
