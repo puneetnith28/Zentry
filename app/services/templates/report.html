@@ -139,10 +139,10 @@
   <table>
     <thead>
       <tr>
-        <th>Module</th>
-        <th>Severity</th>
-        <th>Code</th>
-        <th>Message</th>
+        <th style="width: 12%;">Module</th>
+        <th style="width: 10%;">Severity</th>
+        <th style="width: 25%;">Finding</th>
+        <th style="width: 53%;">Details &amp; Evidence</th>
       </tr>
     </thead>
     <tbody>
@@ -150,8 +150,26 @@
       <tr>
         <td>{{ f.module }}</td>
         <td><span class="{{ severity_badge_class(f.severity) }}">{{ f.severity }}</span></td>
-        <td>{{ f.code }}</td>
-        <td>{{ f.message }}</td>
+        <td>
+          <strong>{{ f.title if f.title else f.code }}</strong>
+          {% if f.code and f.title %}<br><small style="color: #64748b;">{{ f.code }}</small>{% endif %}
+        </td>
+        <td>
+          <div>{{ f.message }}</div>
+          {% if f.description and f.description != f.message %}
+          <div style="margin-top: 4px; font-size: 8.5pt; color: #475569;">{{ f.description }}</div>
+          {% endif %}
+          {% if f.evidence %}
+          <div style="margin-top: 4px; font-size: 8pt; color: #334155; font-family: monospace; background: #f1f5f9; padding: 4px; border-radius: 3px; word-break: break-all;">
+            <strong>Evidence:</strong> {{ f.evidence }}
+          </div>
+          {% endif %}
+          {% if f.remediation %}
+          <div style="margin-top: 4px; font-size: 8.5pt; color: #166534;">
+            <strong>Remediation:</strong> {{ f.remediation }}
+          </div>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

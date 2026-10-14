@@ -7,15 +7,16 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
-from jinja2 import Environment, FileSystemLoader, select_autoescape
+from jinja2 import Environment, FileSystemLoader
 
 logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _env = Environment(
     loader=FileSystemLoader(str(_TEMPLATES_DIR)),
-    autoescape=select_autoescape(["html", "xml"]),
+    autoescape=True,
 )
 
 DEFAULT_MAX_FINDINGS: int = 100
@@ -36,6 +37,40 @@ class PDFGenerationTimeoutError(Exception):
     """Raised when PDF compilation exceeds allowed wall-clock duration."""
 
 
+def sanitize_target_url_for_report(target_url: str) -> str:
+    """
+    Sanitize target URL for report presentation.
+    1. Redacts embedded credentials (user:pass).
+    2. Neutralizes non-http/https execution schemes (e.g. javascript:, data:, vbscript:).
+    """
+    if not target_url:
+        return ""
+    stripped = target_url.strip()
+    try:
+        lower = stripped.lower()
+        for dangerous in ("javascript:", "data:", "vbscript:", "file:", "blob:", "about:"):
+            if lower.startswith(dangerous):
+                return f"[blocked-scheme:{dangerous[:-1]}]"
+
+        if "://" in stripped:
+            parsed = urlsplit(stripped)
+            scheme = parsed.scheme.lower()
+            if scheme not in ("http", "https"):
+                return f"[blocked-scheme:{scheme}]"
+            netloc = parsed.hostname or ""
+            if parsed.port:
+                netloc = f"{netloc}:{parsed.port}"
+            return urlunsplit((scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+        else:
+            if "@" in stripped:
+                stripped = stripped.split("@", 1)[-1]
+            return stripped
+    except Exception:
+        if "@" in stripped:
+            return stripped.split("@", 1)[-1]
+        return stripped
+
+
 def _severity_badge_class(severity: str) -> str:
     return {
         "critical": "badge-critical",
@@ -43,7 +78,7 @@ def _severity_badge_class(severity: str) -> str:
         "medium": "badge-medium",
         "low": "badge-low",
         "info": "badge-info",
-    }.get(severity, "badge-info")
+    }.get(str(severity).lower(), "badge-info")
 
 
 def render_report_html(
@@ -57,6 +92,8 @@ def render_report_html(
     template = _env.get_template("report.html")
     modules = payload.get("modules", {})
     all_findings: list[dict[str, Any]] = []
+
+    safe_target_url = sanitize_target_url_for_report(target_url)
 
     sanitized_modules: dict[str, Any] = {}
     for module_name, module_data in modules.items():
@@ -102,7 +139,7 @@ def render_report_html(
 
     return template.render(
         scan_id=scan_id,
-        target_url=target_url,
+        target_url=safe_target_url,
         scanned_at=payload.get("scanned_at", ""),
         summary=payload.get("summary", {}),
         modules=sanitized_modules,
