@@ -126,6 +126,10 @@ class Settings(BaseSettings):
         ge=60,
         description="Recycle connections after this duration in seconds to prevent stale TCP sockets.",
     )
+    report_cache_dir: str = Field(
+        default="/tmp/zentry_report_cache",
+        description="Directory path for private, non-public cached PDF reports.",
+    )
 
 
 @lru_cache

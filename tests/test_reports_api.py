@@ -200,3 +200,78 @@ def test_sanitize_report_filename_various_targets():
     # Empty string fallback
     assert sanitize_report_filename("", scan_uuid) == "zentry-report-target-12345678.pdf"
 
+
+@patch("app.api.v1.reports.generate_pdf", return_value=b"%PDF-1.4 cached test bytes")
+def test_report_download_uses_cache_on_repeat_requests(mock_pdf, client, db_session):
+    """Verify repeat report requests serve cached PDF without re-running WeasyPrint."""
+    from app.services.report_cache import clear_report_cache, invalidate_cached_report
+
+    clear_report_cache()
+    user, headers = create_test_user(db_session, email_prefix="cached_user")
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://cached.example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload={
+            "target": "https://cached.example.com",
+            "scanned_at": "2026-05-15T00:00:00+00:00",
+            "modules": {},
+            "summary": {"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+        },
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    # 1. First request compiles PDF
+    resp1 = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+    assert resp1.status_code == 200
+    assert resp1.content == b"%PDF-1.4 cached test bytes"
+    assert mock_pdf.call_count == 1
+
+    # 2. Second request hits cache; generate_pdf is NOT called again
+    resp2 = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+    assert resp2.status_code == 200
+    assert resp2.content == b"%PDF-1.4 cached test bytes"
+    assert mock_pdf.call_count == 1  # Still 1! Zero re-compilation
+
+    # 3. Invalidate cache; third request re-compiles
+    invalidate_cached_report(job.id)
+    resp3 = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+    assert resp3.status_code == 200
+    assert resp3.content == b"%PDF-1.4 cached test bytes"
+    assert mock_pdf.call_count == 2
+
+
+def test_report_cache_operations_and_traversal_safety():
+    """Verify report_cache direct operations, atomic writes, and path traversal rejection."""
+    import uuid
+    from app.services.report_cache import (
+        clear_report_cache,
+        get_cached_report,
+        invalidate_cached_report,
+        set_cached_report,
+    )
+
+    test_id = uuid.uuid4()
+    pdf_sample = b"%PDF-sample-atomic-cache"
+
+    # Set and get
+    set_cached_report(test_id, pdf_sample)
+    cached = get_cached_report(test_id)
+    assert cached == pdf_sample
+
+    # Invalidate
+    assert invalidate_cached_report(test_id) is True
+    assert get_cached_report(test_id) is None
+    assert invalidate_cached_report(test_id) is False
+
+    # Path traversal attack in scan_id should be safely neutralized to filename
+    traversal_id = "../../etc/passwd"
+    set_cached_report(traversal_id, b"%PDF-traversal-safe")
+    assert get_cached_report("passwd") == b"%PDF-traversal-safe"
+    invalidate_cached_report("passwd")
+
+    clear_report_cache()
+
+

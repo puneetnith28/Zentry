@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_current_user, get_db
 from app.db.models import ScanJob, ScanStatusEnum, User
 from app.services.pdf_generator import generate_pdf
+from app.services.report_cache import get_cached_report, set_cached_report
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -78,22 +79,25 @@ def get_scan_pdf(
             detail="Scan is not completed or has no results",
         )
 
-    try:
-        payload = job.result_payload or {}
-        pdf_bytes = generate_pdf(
-            payload,
-            scan_id=str(job.id),
-            target_url=job.target_url,
-            scan_status=job.status.value,
-            error_message=job.error_message,
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).exception("Failed to generate PDF report for scan %s: %s", scan_id, e)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate PDF report.",
-        )
+    pdf_bytes = get_cached_report(scan_id)
+    if pdf_bytes is None:
+        try:
+            payload = job.result_payload or {}
+            pdf_bytes = generate_pdf(
+                payload,
+                scan_id=str(job.id),
+                target_url=job.target_url,
+                scan_status=job.status.value,
+                error_message=job.error_message,
+            )
+            set_cached_report(scan_id, pdf_bytes)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception("Failed to generate PDF report for scan %s: %s", scan_id, e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to generate PDF report.",
+            )
     filename = sanitize_report_filename(job.target_url, str(scan_id))
     return Response(
         content=pdf_bytes,
