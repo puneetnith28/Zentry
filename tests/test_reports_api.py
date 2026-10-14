@@ -97,7 +97,9 @@ def test_owner_report_download_success(mock_pdf, client, db_session):
     response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
-    assert f'filename="zentry-report-{job.id}.pdf"' in response.headers["content-disposition"]
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert "private" in response.headers["cache-control"]
+    assert f'filename="zentry-report-example.com-{str(job.id)[:8]}.pdf"' in response.headers["content-disposition"]
     assert response.content == b"%PDF-1.4 mock pdf content"
     mock_pdf.assert_called_once()
 
@@ -125,6 +127,7 @@ def test_superuser_can_download_any_report(mock_pdf, client, db_session):
     response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=admin_headers)
     assert response.status_code == 200
     assert response.content == b"%PDF-1.4 admin pdf content"
+    assert f'filename="zentry-report-example.com-{str(job.id)[:8]}.pdf"' in response.headers["content-disposition"]
     mock_pdf.assert_called_once()
 
 
@@ -145,7 +148,7 @@ def test_report_download_failed_scan_success(mock_pdf, client, db_session):
     response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
     assert response.status_code == 200
     assert response.content == b"%PDF-1.4 failed scan report"
-    assert f'filename="zentry-report-{job.id}.pdf"' in response.headers["content-disposition"]
+    assert f'filename="zentry-report-failed.example.com-{str(job.id)[:8]}.pdf"' in response.headers["content-disposition"]
     mock_pdf.assert_called_once()
     assert mock_pdf.call_args[1]["scan_status"] == "FAILED"
     assert mock_pdf.call_args[1]["error_message"] == "Connection timeout during network probe"
@@ -168,5 +171,32 @@ def test_report_download_cancelled_scan_success(mock_pdf, client, db_session):
     response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
     assert response.status_code == 200
     assert response.content == b"%PDF-1.4 cancelled scan report"
+    assert f'filename="zentry-report-cancelled.example.com-{str(job.id)[:8]}.pdf"' in response.headers["content-disposition"]
     mock_pdf.assert_called_once()
     assert mock_pdf.call_args[1]["scan_status"] == "CANCELLED"
+
+
+def test_sanitize_report_filename_various_targets():
+    """Verify sanitize_report_filename strips injection characters, paths, credentials, and control chars."""
+    from app.api.v1.reports import sanitize_report_filename
+
+    scan_uuid = "12345678-abcd-1111-2222-333344445555"
+
+    # Standard URL
+    assert sanitize_report_filename("https://my-app.org/dashboard", scan_uuid) == "zentry-report-my-app.org-12345678.pdf"
+
+    # URL with embedded credentials
+    assert sanitize_report_filename("https://admin:secret@api.internal.net:8443/v1", scan_uuid) == "zentry-report-api.internal.net-12345678.pdf"
+
+    # Path traversal attempt
+    assert sanitize_report_filename("https://evil.corp/../../../../etc/passwd", scan_uuid) == "zentry-report-evil.corp-12345678.pdf"
+
+    # CRLF header injection attempt
+    assert sanitize_report_filename("https://injected.com\r\nX-Injected: attack", scan_uuid) == "zentry-report-injected.com-12345678.pdf"
+
+    # Special characters and spaces
+    assert sanitize_report_filename("foo bar \" ' < >", scan_uuid) == "zentry-report-foo_bar-12345678.pdf"
+
+    # Empty string fallback
+    assert sanitize_report_filename("", scan_uuid) == "zentry-report-target-12345678.pdf"
+
