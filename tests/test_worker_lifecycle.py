@@ -367,3 +367,36 @@ def test_celery_broker_redis_socket_timeouts_and_connection_pool():
     assert r_opts["retry_on_timeout"] is True
 
 
+def test_check_worker_health_healthy():
+    from worker_health import check_worker_health
+
+    with patch("worker_health.celery_app.control.inspect") as mock_inspect:
+        mock_insp = MagicMock()
+        mock_insp.ping.return_value = {"celery@worker1": {"ok": "pong"}}
+        mock_inspect.return_value = mock_insp
+
+        assert check_worker_health() is True
+
+
+def test_check_worker_health_unresponsive():
+    from worker_health import check_worker_health
+
+    with patch("worker_health.celery_app.control.inspect") as mock_inspect:
+        mock_insp = MagicMock()
+        mock_insp.ping.return_value = None
+        mock_insp.stats.return_value = None
+        mock_inspect.return_value = mock_insp
+
+        assert check_worker_health() is False
+
+
+def test_check_worker_health_exception():
+    from worker_health import check_worker_health
+
+    with patch("worker_health.celery_app.control.inspect") as mock_inspect:
+        mock_inspect.side_effect = RuntimeError("Inspect broker communication failure")
+
+        assert check_worker_health() is False
+
+
+
