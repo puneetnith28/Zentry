@@ -107,7 +107,7 @@ def render_report_html(
     sanitized_modules: dict[str, Any] = {}
     for module_name, module_data in modules.items():
         if not isinstance(module_data, dict):
-            sanitized_modules[module_name] = module_data
+            sanitized_modules[module_name] = {"raw": module_data, "status": "unknown"} if module_data is not None else {}
             continue
         mod_copy = dict(module_data)
         if "findings" in mod_copy and isinstance(mod_copy["findings"], list):

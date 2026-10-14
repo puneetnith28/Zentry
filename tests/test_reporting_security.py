@@ -537,3 +537,157 @@ def test_api_json_and_report_data_contract_alignment(client, db_session):
     assert "ID: f00ba4123456" in report_html
 
 
+def test_render_report_html_malformed_evidence_handled_safely():
+    """Verify malformed evidence types (dict, list, int, None, null bytes) do not crash report rendering."""
+    payload = {
+        "target": "https://malformed.example.com",
+        "scanned_at": "2026-10-14T00:00:00Z",
+        "modules": {
+            "test_mod": {
+                "status": "success",
+                "findings": [
+                    {"code": "F1", "severity": "info", "evidence": {"nested": "dict_evidence"}},
+                    {"code": "F2", "severity": "low", "evidence": ["list", "of", "evidence"]},
+                    {"code": "F3", "severity": "medium", "evidence": 12345},
+                    {"code": "F4", "severity": "high", "evidence": None},
+                    {"code": "F5", "severity": "critical", "evidence": "null\x00byte\x00string"},
+                ],
+            }
+        },
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="malformed-ev-01",
+        target_url="https://malformed.example.com",
+    )
+
+    assert "F1" in html
+    assert "F2" in html
+    assert "F3" in html
+    assert "F4" in html
+    assert "F5" in html
+
+
+def test_render_report_html_empty_and_non_dict_modules_handled_safely():
+    """Verify report rendering handles empty, None, and non-dict module entries gracefully."""
+    payload = {
+        "target": "https://empty-mods.example.com",
+        "scanned_at": "2026-10-14T00:00:00Z",
+        "modules": {
+            "empty_mod": {},
+            "none_mod": None,
+            "str_mod": "unexpected string data",
+            "list_mod": [1, 2, 3],
+        },
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="empty-mods-01",
+        target_url="https://empty-mods.example.com",
+    )
+
+    assert "Zentry Security Report" in html
+    assert "No findings recorded." in html
+
+
+def test_report_generation_exception_redacts_system_internals_and_paths(client, db_session):
+    """Verify server-side report compilation exceptions never leak stack traces, paths, or internals to clients."""
+    import uuid
+    from app.core.security import create_access_token, get_password_hash
+    from app.db.models import ScanJob, ScanStatusEnum, User
+    from app.services.report_cache import clear_report_cache
+
+    clear_report_cache()
+    user = User(
+        email=f"redact_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password=get_password_hash("Password123!"),
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://redact.example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload={"target": "https://redact.example.com", "modules": {}},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    sensitive_exception_msg = (
+        "/usr/local/lib/python3.11/site-packages/weasyprint/core.py: line 42: "
+        "Segmentation fault at 0xdeadbeef: failed query to postgres://postgres:SecretPassword@10.0.0.5:5432/db"
+    )
+
+    with patch("app.api.v1.reports.generate_pdf", side_effect=RuntimeError(sensitive_exception_msg)):
+        response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+
+    assert response.status_code == 500
+    resp_text = response.text
+
+    # Assert no sensitive internal details leaked in response
+    assert "/usr/local" not in resp_text
+    assert "weasyprint/core.py" not in resp_text
+    assert "Segmentation fault" not in resp_text
+    assert "0xdeadbeef" not in resp_text
+    assert "SecretPassword" not in resp_text
+    assert "10.0.0.5" not in resp_text
+
+    # Assert clean standardized error response structure
+    data = response.json()
+    assert "detail" in data
+    if "error" in data:
+        assert data["error"]["code"] in ("INTERNAL_SERVER_ERROR", "INTERNAL_ERROR")
+        assert "request_id" in data["error"]
+
+
+def test_report_generation_timeout_exception_handling(client, db_session):
+    """Verify PDF compilation timeout exceptions return generic error responses without stack trace disclosure."""
+    import uuid
+    from app.core.security import create_access_token, get_password_hash
+    from app.db.models import ScanJob, ScanStatusEnum, User
+    from app.services.pdf_generator import PDFGenerationTimeoutError
+    from app.services.report_cache import clear_report_cache
+
+    clear_report_cache()
+    user = User(
+        email=f"timeout_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password=get_password_hash("Password123!"),
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://timeout.example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload={"target": "https://timeout.example.com", "modules": {}},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    with patch("app.api.v1.reports.generate_pdf", side_effect=PDFGenerationTimeoutError("Deadline exceeded")):
+        response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+
+    assert response.status_code == 500
+    assert "Traceback" not in response.text
+    assert "generate_pdf" not in response.text
+    data = response.json()
+    assert "detail" in data
+
+
+

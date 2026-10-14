@@ -323,7 +323,8 @@
   {% endif %}
 
   {% for module_name, module_json in module_jsons.items() %}
-  {% set m_status = summary.get('module_status', {}).get(module_name, modules.get(module_name, {}).get('status')) %}
+  {% set mod_obj = modules.get(module_name) if modules.get(module_name) is mapping else {} %}
+  {% set m_status = summary.get('module_status', {}).get(module_name, mod_obj.get('status')) %}
   <h2>
     {{ module_name|upper }} Module
     {% if m_status %}
@@ -332,9 +333,9 @@
       </span>
     {% endif %}
   </h2>
-  {% if modules.get(module_name, {}).get('error') %}
+  {% if mod_obj.get('error') %}
   <p class="meta" style="color: #b91c1c; font-weight: bold;">
-    Module Error: {{ modules[module_name].error }}
+    Module Error: {{ mod_obj.error }}
   </p>
   {% endif %}
   <pre>{{ module_json }}</pre>
