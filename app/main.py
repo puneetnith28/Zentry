@@ -39,6 +39,8 @@ STATUS_CODE_TO_ERROR_CODE: dict[int, str] = {
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.core.config import validate_production_security
+    validate_production_security(settings)
     from app.core.logging import configure_logging
     configure_logging(level=settings.log_level, json_format=(settings.log_format.lower() == "json"))
     init_db()
@@ -86,9 +88,11 @@ async def correlation_id_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def structured_request_logging_middleware(request: Request, call_next):
+    from app.core.proxy import get_client_ip
     req_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
     start_time = time.perf_counter()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request, settings)
+    request.state.client_ip = client_ip
 
     logger.info(
         "Request started: method=%s path=%s client_ip=%s request_id=%s",

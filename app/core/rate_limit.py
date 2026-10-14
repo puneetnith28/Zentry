@@ -44,13 +44,15 @@ class SlidingWindowRateLimiter:
             self._requests.clear()
 
 
+from app.core.proxy import get_client_ip
+
 limiter = SlidingWindowRateLimiter()
 
 
 def rate_limit_login(request: Request) -> None:
     """Rate limit login requests by client host."""
     settings = get_settings()
-    host = request.client.host if request.client else "127.0.0.1"
+    host = get_client_ip(request, settings)
     key = f"login:{host}"
     limiter.check(
         key=key,
@@ -66,7 +68,7 @@ def rate_limit_scans(request: Request) -> None:
     if auth_header:
         key = f"scan:auth:{auth_header}"
     else:
-        host = request.client.host if request.client else "127.0.0.1"
+        host = get_client_ip(request, settings)
         key = f"scan:ip:{host}"
 
     limiter.check(
@@ -74,3 +76,4 @@ def rate_limit_scans(request: Request) -> None:
         max_requests=settings.scan_rate_limit_per_minute,
         window_seconds=60.0,
     )
+
