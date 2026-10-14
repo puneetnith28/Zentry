@@ -220,11 +220,12 @@ def calculate_risk_score(summary: dict[str, int] | Any) -> RiskScoreResult:
     else:
         counts = {}
 
-    raw = 0
+    raw: float = 0.0
     for sev, weight in SEVERITY_WEIGHTS.items():
         count_val = counts.get(sev, 0)
         if isinstance(count_val, (int, float)):
-            raw += count_val * weight
+            raw += float(count_val * weight)
+
 
     score = min(100, max(0, int(round(raw))))
     if score >= 75:

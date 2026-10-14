@@ -62,35 +62,35 @@ DEFAULT_HEADERS_MAX_RESPONSE_BYTES: Final[int] = 64 * 1024  # 64 KB
 
 # Comprehensive IPv4 prohibited ranges (RFC 1918, 1122, 3927, 5771, 6598, etc.)
 PROHIBITED_IPV4_NETWORKS: Final[tuple[ipaddress.IPv4Network, ...]] = (
-    ipaddress.ip_network("0.0.0.0/8"),          # Current network / "this host"
-    ipaddress.ip_network("10.0.0.0/8"),         # Private RFC 1918
-    ipaddress.ip_network("100.64.0.0/10"),      # Shared Address Space / CGNAT RFC 6598
-    ipaddress.ip_network("127.0.0.0/8"),        # Loopback RFC 1122
-    ipaddress.ip_network("169.254.0.0/16"),     # Link Local RFC 3927 (includes 169.254.169.254)
-    ipaddress.ip_network("172.16.0.0/12"),      # Private RFC 1918
-    ipaddress.ip_network("192.0.0.0/24"),       # IETF Protocol Assignments RFC 6890
-    ipaddress.ip_network("192.0.2.0/24"),       # TEST-NET-1 Documentation RFC 5737
-    ipaddress.ip_network("192.88.99.0/24"),     # 6to4 Relay Anycast RFC 7526
-    ipaddress.ip_network("192.168.0.0/16"),     # Private RFC 1918
-    ipaddress.ip_network("198.18.0.0/15"),      # Benchmark testing RFC 2544
-    ipaddress.ip_network("198.51.100.0/24"),    # TEST-NET-2 Documentation RFC 5737
-    ipaddress.ip_network("203.0.113.0/24"),     # TEST-NET-3 Documentation RFC 5737
-    ipaddress.ip_network("224.0.0.0/4"),        # Multicast RFC 5771
-    ipaddress.ip_network("240.0.0.0/4"),        # Reserved RFC 1112
-    ipaddress.ip_network("255.255.255.255/32"), # Broadcast RFC 919
+    ipaddress.IPv4Network("0.0.0.0/8"),          # Current network / "this host"
+    ipaddress.IPv4Network("10.0.0.0/8"),         # Private RFC 1918
+    ipaddress.IPv4Network("100.64.0.0/10"),      # Shared Address Space / CGNAT RFC 6598
+    ipaddress.IPv4Network("127.0.0.0/8"),        # Loopback RFC 1122
+    ipaddress.IPv4Network("169.254.0.0/16"),     # Link Local RFC 3927 (includes 169.254.169.254)
+    ipaddress.IPv4Network("172.16.0.0/12"),      # Private RFC 1918
+    ipaddress.IPv4Network("192.0.0.0/24"),       # IETF Protocol Assignments RFC 6890
+    ipaddress.IPv4Network("192.0.2.0/24"),       # TEST-NET-1 Documentation RFC 5737
+    ipaddress.IPv4Network("192.88.99.0/24"),     # 6to4 Relay Anycast RFC 7526
+    ipaddress.IPv4Network("192.168.0.0/16"),     # Private RFC 1918
+    ipaddress.IPv4Network("198.18.0.0/15"),      # Benchmark testing RFC 2544
+    ipaddress.IPv4Network("198.51.100.0/24"),    # TEST-NET-2 Documentation RFC 5737
+    ipaddress.IPv4Network("203.0.113.0/24"),     # TEST-NET-3 Documentation RFC 5737
+    ipaddress.IPv4Network("224.0.0.0/4"),        # Multicast RFC 5771
+    ipaddress.IPv4Network("240.0.0.0/4"),        # Reserved RFC 1112
+    ipaddress.IPv4Network("255.255.255.255/32"), # Broadcast RFC 919
 )
 
 # Comprehensive IPv6 prohibited ranges (RFC 4291, 4193, 3849, 6666, etc.)
 PROHIBITED_IPV6_NETWORKS: Final[tuple[ipaddress.IPv6Network, ...]] = (
-    ipaddress.ip_network("::/128"),             # Unspecified address RFC 4291
-    ipaddress.ip_network("::1/128"),            # Loopback RFC 4291
-    ipaddress.ip_network("100::/64"),           # Discard-only prefix RFC 6666
-    ipaddress.ip_network("2001::/23"),          # IETF protocol assignments
-    ipaddress.ip_network("2001:db8::/32"),      # Documentation RFC 3849
-    ipaddress.ip_network("2002::/16"),          # 6to4 relay RFC 3056
-    ipaddress.ip_network("fc00::/7"),           # Unique Local RFC 4193
-    ipaddress.ip_network("fe80::/10"),          # Link-local unicast RFC 4291
-    ipaddress.ip_network("ff00::/8"),           # Multicast RFC 4291
+    ipaddress.IPv6Network("::/128"),             # Unspecified address RFC 4291
+    ipaddress.IPv6Network("::1/128"),            # Loopback RFC 4291
+    ipaddress.IPv6Network("100::/64"),           # Discard-only prefix RFC 6666
+    ipaddress.IPv6Network("2001::/23"),          # IETF protocol assignments
+    ipaddress.IPv6Network("2001:db8::/32"),      # Documentation RFC 3849
+    ipaddress.IPv6Network("2002::/16"),          # 6to4 relay RFC 3056
+    ipaddress.IPv6Network("fc00::/7"),           # Unique Local RFC 4193
+    ipaddress.IPv6Network("fe80::/10"),          # Link-local unicast RFC 4291
+    ipaddress.IPv6Network("ff00::/8"),           # Multicast RFC 4291
 )
 
 
@@ -205,7 +205,7 @@ def resolve_public_target(
 
     for item in addrinfo:
         sockaddr = item[4]
-        ip_str = sockaddr[0]
+        ip_str = str(sockaddr[0])
         if ip_str in seen:
             continue
         seen.add(ip_str)
@@ -242,7 +242,7 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
         port: int,
         timeout: float | None = None,
         local_address: str | None = None,
-        socket_options = None,
+        socket_options: Any = None,
     ) -> httpcore.AsyncNetworkStream:
         resolved = resolve_public_target(host, port)
         pinned_ip = str(resolved[0])
@@ -254,7 +254,7 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
             socket_options=socket_options,
         )
 
-    async def connect_unix_socket(self, *args, **kwargs) -> httpcore.AsyncNetworkStream:
+    async def connect_unix_socket(self, *args: Any, **kwargs: Any) -> httpcore.AsyncNetworkStream:
         return await self._inner.connect_unix_socket(*args, **kwargs)
 
     async def sleep(self, seconds: float) -> None:
@@ -264,11 +264,12 @@ class PinnedNetworkBackend(httpcore.AsyncNetworkBackend):
 class SafeAsyncHTTPTransport(httpx.AsyncHTTPTransport):
     """Custom HTTP transport that pins connections to pre-validated public IPs to prevent DNS rebinding."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         orig_backend = getattr(self._pool, "_network_backend", None)
         if orig_backend is not None:
             self._pool._network_backend = PinnedNetworkBackend(orig_backend)
+
 
 
 def validate_proxy_url(proxy_url: str) -> None:
@@ -361,7 +362,7 @@ class SafeStreamReader:
     async def __aenter__(self) -> SafeStreamReader:
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         pass
 
 
@@ -416,7 +417,7 @@ def create_safe_async_client(
     follow_redirects: bool = False,
     trust_env: bool = False,
     proxy: str | None = None,
-    **kwargs,
+    **kwargs: Any,
 ) -> httpx.AsyncClient:
     """
     Create an httpx.AsyncClient configured with SafeAsyncHTTPTransport.
@@ -466,7 +467,7 @@ async def safe_request(
     max_redirects: int = 5,
     timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
     max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
-    **kwargs,
+    **kwargs: Any,
 ) -> httpx.Response:
     """
     Perform an outbound HTTP request with strict hop-by-hop redirect revalidation.
@@ -555,7 +556,7 @@ async def safe_stream_request(
     client: httpx.AsyncClient | None = None,
     timeout: float | httpx.Timeout = DEFAULT_REQUEST_TIMEOUT,
     max_response_bytes: int | None = DEFAULT_MAX_RESPONSE_BYTES,
-    **kwargs,
+    **kwargs: Any,
 ) -> AsyncIterator[httpx.Response]:
     """Perform a streaming outbound HTTP request with strict safe destination validation.
 
