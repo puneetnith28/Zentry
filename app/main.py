@@ -6,6 +6,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import redis
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -255,5 +256,47 @@ app.include_router(reports.router, prefix="/api/v1")
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
+def health() -> JSONResponse:
+    from sqlalchemy import text
+    from app.db.session import engine
+    from app.core.celery_app import celery_app
+
+    db_status = "healthy"
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        logger.warning("Database health check probe failed: %s", exc)
+        db_status = "unhealthy"
+
+    broker_status = "healthy"
+    try:
+        broker_url = settings.celery_broker_url
+        if broker_url.startswith("redis://"):
+            r = redis.Redis.from_url(
+                broker_url,
+                socket_timeout=settings.redis_socket_timeout,
+                socket_connect_timeout=settings.redis_socket_connect_timeout,
+            )
+            r.ping()
+            r.close()
+        else:
+            with celery_app.connection_for_read() as conn:
+                conn.connect()
+    except Exception as exc:
+        logger.warning("Broker health check probe failed: %s", exc)
+        broker_status = "unhealthy"
+
+    is_healthy = (db_status == "healthy" and broker_status == "healthy")
+    payload = {
+        "status": "ok" if is_healthy else "unhealthy",
+        "components": {
+            "database": {"status": db_status},
+            "broker": {"status": broker_status},
+        },
+    }
+    return JSONResponse(
+        status_code=status.HTTP_200_OK if is_healthy else status.HTTP_503_SERVICE_UNAVAILABLE,
+        content=payload,
+    )
+
