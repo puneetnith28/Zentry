@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -14,6 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import auth, reports, scans
 from app.core.config import get_settings
+from app.core.logging import redact_sensitive_data, redact_sensitive_headers
 from app.db.session import init_db
 
 logger = logging.getLogger(__name__)
@@ -66,6 +68,51 @@ async def correlation_id_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Request-ID"] = req_id
     return response
+
+
+@app.middleware("http")
+async def structured_request_logging_middleware(request: Request, call_next):
+    req_id = getattr(request.state, "request_id", None) or request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    start_time = time.perf_counter()
+    client_ip = request.client.host if request.client else "unknown"
+
+    logger.info(
+        "Request started: method=%s path=%s client_ip=%s request_id=%s",
+        request.method,
+        request.url.path,
+        client_ip,
+        req_id,
+    )
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug(
+            "Request headers: headers=%s request_id=%s",
+            redact_sensitive_headers(dict(request.headers)),
+            req_id,
+        )
+
+    try:
+        response = await call_next(request)
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        logger.info(
+            "Request finished: method=%s path=%s status=%s duration_ms=%s request_id=%s",
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+            req_id,
+        )
+        return response
+    except Exception as exc:
+        duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+        logger.error(
+            "Request failed: method=%s path=%s duration_ms=%s request_id=%s error=%s",
+            request.method,
+            request.url.path,
+            duration_ms,
+            req_id,
+            exc,
+        )
+        raise
 
 
 @app.middleware("http")
