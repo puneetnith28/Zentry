@@ -82,3 +82,18 @@ def test_get_db_rollback_on_unhandled_exception():
 
         mock_session.rollback.assert_called_once()
         mock_session.close.assert_called_once()
+
+
+def test_create_app_engine_pool_tuning_and_timeouts():
+    from app.db.session import create_app_engine
+    with patch("app.db.session.create_engine") as mock_ce:
+        create_app_engine("postgresql://postgres:secret@db:5432/test")
+        mock_ce.assert_called_once()
+        _, kwargs = mock_ce.call_args
+        assert kwargs["pool_pre_ping"] is True
+        assert kwargs["pool_size"] == 10
+        assert kwargs["max_overflow"] == 20
+        assert kwargs["pool_timeout"] == 30.0
+        assert kwargs["pool_recycle"] == 1800
+        assert kwargs["connect_args"] == {"connect_timeout": 10}
+

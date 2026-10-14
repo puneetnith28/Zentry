@@ -26,6 +26,7 @@ def create_app_engine(database_url: str | None = None, current_settings=None):
                 "max_overflow": current_settings.db_max_overflow,
                 "pool_timeout": current_settings.db_pool_timeout,
                 "pool_recycle": current_settings.db_pool_recycle_seconds,
+                "connect_args": {"connect_timeout": 10},
             }
         )
     return create_engine(url, **engine_kwargs)
