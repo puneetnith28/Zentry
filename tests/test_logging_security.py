@@ -91,3 +91,36 @@ def test_structured_request_logging_output(caplog):
     # Crucial security check: Token must never appear anywhere in the captured log records
     for record in caplog.records:
         assert token not in record.message
+
+
+def test_structured_json_formatter_valid_json():
+    import json
+    import logging
+    from app.core.logging import StructuredJSONFormatter
+
+    formatter = StructuredJSONFormatter()
+    record = logging.LogRecord(
+        name="test.logger",
+        level=logging.INFO,
+        pathname="/app/test.py",
+        lineno=42,
+        msg="Sample log message with %s",
+        args=("argument",),
+        exc_info=None,
+    )
+    record.request_id = "req-12345"
+    record.custom_field = "custom_value"
+    record.password = "secret_pass"
+
+    output = formatter.format(record)
+    parsed = json.loads(output)
+
+    assert parsed["level"] == "INFO"
+    assert parsed["logger"] == "test.logger"
+    assert parsed["message"] == "Sample log message with argument"
+    assert parsed["request_id"] == "req-12345"
+    assert parsed["custom_field"] == "custom_value"
+    assert parsed["password"] == "[REDACTED]"
+    assert parsed["caller"]["line"] == 42
+    assert "timestamp" in parsed
+

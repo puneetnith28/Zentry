@@ -162,6 +162,15 @@ class Settings(BaseSettings):
         ge=5,
         description="Maximum client connections for Redis connection pool.",
     )
+    log_format: str = Field(
+        default="text",
+        description="Application logging format: 'text' or 'json'.",
+    )
+    log_level: str = Field(
+        default="INFO",
+        description="Application logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    )
+
 
 
 

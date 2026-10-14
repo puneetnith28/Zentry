@@ -55,3 +55,63 @@ def redact_sensitive_data(data: Any) -> Any:
     elif isinstance(data, list):
         return [redact_sensitive_data(item) for item in data]
     return data
+
+
+class StructuredJSONFormatter(logging.Formatter):
+    """
+    Format log records as structured single-line JSON objects with ISO timestamps,
+    log levels, logger names, message bodies, caller locations, and diagnostic metadata.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        import json
+        from datetime import datetime, timezone
+
+        record_dict: dict[str, Any] = {
+            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "caller": {
+                "module": record.module,
+                "function": record.funcName,
+                "line": record.lineno,
+            },
+        }
+
+        if hasattr(record, "request_id"):
+            record_dict["request_id"] = getattr(record, "request_id")
+
+        if record.exc_info:
+            record_dict["exception"] = self.formatException(record.exc_info)
+
+        standard_attrs = {
+            "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
+            "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
+            "created", "msecs", "relativeCreated", "thread", "threadName",
+            "processName", "process", "message", "request_id", "caller", "exception",
+        }
+        for k, v in record.__dict__.items():
+            if k not in standard_attrs and not k.startswith("_"):
+                if str(k).lower().strip() in SENSITIVE_BODY_KEYS:
+                    record_dict[k] = REDACTED_VALUE
+                else:
+                    record_dict[k] = redact_sensitive_data(v)
+
+        return json.dumps(record_dict, default=str)
+
+
+
+def configure_logging(level: str = "INFO", json_format: bool = False) -> None:
+    """Configure root logger with either structured JSON or standard text log formatting."""
+    root_logger = logging.getLogger()
+    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    handler = logging.StreamHandler()
+    if json_format:
+        handler.setFormatter(StructuredJSONFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter("[%(asctime)s] [%(levelname)s] [%(name)s]: %(message)s")
+        )
+    root_logger.handlers = [handler]
+

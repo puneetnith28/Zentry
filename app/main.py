@@ -40,6 +40,8 @@ STATUS_CODE_TO_ERROR_CODE: dict[int, str] = {
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    from app.core.logging import configure_logging
+    configure_logging(level=settings.log_level, json_format=(settings.log_format.lower() == "json"))
     init_db()
     try:
         from app.worker.tasks import recover_stale_scans
