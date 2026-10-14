@@ -300,27 +300,79 @@ def get_default_timeout(
     )
 
 
+class SafeStreamReader:
+    """
+    Safely streams and bounds HTTP response or byte streams up to a maximum cumulative byte limit.
+
+    Protects against decompression bombs, slowloris byte exhaustion, and unbounded streaming responses
+    by tracking cumulative read bytes and halting immediately when the configured budget is exceeded.
+    """
+
+    def __init__(
+        self,
+        response: httpx.Response | None = None,
+        max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        chunk_size: int = 8192,
+    ) -> None:
+        self.response = response
+        self.max_bytes = max_bytes
+        self.chunk_size = chunk_size
+        self.bytes_read: int = 0
+
+        if self.response is not None:
+            cl_header = self.response.headers.get("content-length")
+            if cl_header and cl_header.strip().isdigit():
+                if int(cl_header.strip()) > self.max_bytes:
+                    raise ResponseBodyTooLargeError(
+                        f"Response Content-Length {cl_header} exceeds limit of {self.max_bytes} bytes"
+                    )
+
+    async def iter_bytes(
+        self,
+        stream: AsyncIterator[bytes] | None = None,
+        chunk_size: int | None = None,
+    ) -> AsyncIterator[bytes]:
+        """Yield chunks while enforcing cumulative read byte limits."""
+        size = chunk_size or self.chunk_size
+        byte_stream = stream
+        if byte_stream is None:
+            if self.response is None:
+                raise ValueError("No response or stream provided to SafeStreamReader")
+            byte_stream = self.response.aiter_bytes(chunk_size=size)
+
+        async for chunk in byte_stream:
+            self.bytes_read += len(chunk)
+            if self.bytes_read > self.max_bytes:
+                raise ResponseBodyTooLargeError(
+                    f"Response stream exceeded limit of {self.max_bytes} bytes (read {self.bytes_read} bytes)"
+                )
+            yield chunk
+
+    async def read_all(
+        self,
+        stream: AsyncIterator[bytes] | None = None,
+    ) -> bytes:
+        """Accumulate entire stream content safely into bytes, raising ResponseBodyTooLargeError if exceeded."""
+        body = bytearray()
+        async for chunk in self.iter_bytes(stream=stream):
+            body.extend(chunk)
+        return bytes(body)
+
+    async def __aenter__(self) -> SafeStreamReader:
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        pass
+
+
 async def read_bounded_response_stream(
     response: httpx.Response,
     max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
     chunk_size: int = 8192,
 ) -> bytes:
     """Stream response content safely up to max_bytes, aborting if exceeded."""
-    cl_header = response.headers.get("content-length")
-    if cl_header and cl_header.strip().isdigit():
-        if int(cl_header.strip()) > max_bytes:
-            raise ResponseBodyTooLargeError(
-                f"Response Content-Length {cl_header} exceeds limit of {max_bytes} bytes"
-            )
-
-    body = bytearray()
-    async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-        body.extend(chunk)
-        if len(body) > max_bytes:
-            raise ResponseBodyTooLargeError(
-                f"Response stream exceeded limit of {max_bytes} bytes"
-            )
-    return bytes(body)
+    reader = SafeStreamReader(response=response, max_bytes=max_bytes, chunk_size=chunk_size)
+    return await reader.read_all()
 
 
 def create_safe_async_client(

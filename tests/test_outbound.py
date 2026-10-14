@@ -402,3 +402,44 @@ async def test_read_bounded_response_stream():
     res_large = httpx.Response(200, content=b"A" * 100)
     with pytest.raises(ResponseBodyTooLargeError):
         await read_bounded_response_stream(res_large, max_bytes=50, chunk_size=10)
+
+
+@pytest.mark.asyncio
+async def test_safe_stream_reader_infinite_stream():
+    from app.core.outbound import SafeStreamReader, ResponseBodyTooLargeError
+
+    async def infinite_stream():
+        while True:
+            yield b"X" * 1024
+
+    reader = SafeStreamReader(max_bytes=4096)
+    with pytest.raises(ResponseBodyTooLargeError) as exc_info:
+        await reader.read_all(stream=infinite_stream())
+    assert "exceeded limit of 4096 bytes" in str(exc_info.value)
+    assert reader.bytes_read > 4096
+
+
+@pytest.mark.asyncio
+async def test_safe_stream_reader_content_length_precheck():
+    import httpx
+    from app.core.outbound import SafeStreamReader, ResponseBodyTooLargeError
+
+    res = httpx.Response(200, headers={"content-length": "1000000"})
+    with pytest.raises(ResponseBodyTooLargeError) as exc_info:
+        SafeStreamReader(response=res, max_bytes=5000)
+    assert "Content-Length 1000000 exceeds limit" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_safe_stream_reader_context_manager():
+    import httpx
+    from app.core.outbound import SafeStreamReader
+
+    res = httpx.Response(200, content=b"safe streaming content")
+    async with SafeStreamReader(response=res, max_bytes=100) as reader:
+        chunks = []
+        async for chunk in reader.iter_bytes():
+            chunks.append(chunk)
+        assert b"".join(chunks) == b"safe streaming content"
+        assert reader.bytes_read == len(b"safe streaming content")
+
