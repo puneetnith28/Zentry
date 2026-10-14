@@ -376,3 +376,164 @@ def test_render_report_html_partial_module_failures_displays_warning():
     assert "module-badge-error" in html
     assert "Module Error: Handshake failure during cipher enumeration" in html
 
+
+def test_render_report_html_renders_precomputed_score_identically():
+    """Verify PDF generator reads precomputed canonical score directly from result_payload."""
+    payload = {
+        "target": "https://scored.example.com",
+        "scanned_at": "2026-10-14T12:00:00Z",
+        "risk_score": 75,
+        "risk_level": "Critical Risk",
+        "score_version": "1.0.0",
+        "summary": {"critical": 3, "high": 0, "medium": 0, "low": 0, "info": 0},
+        "modules": {},
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="score-test-01",
+        target_url="https://scored.example.com",
+    )
+
+    assert "75/100" in html
+    assert "Critical Risk" in html
+    assert "v1.0.0" in html
+
+
+def test_render_report_html_fallback_score_calculation():
+    """Verify fallback score calculation matches canonical calculate_risk_score output."""
+    payload = {
+        "target": "https://fallback.example.com",
+        "scanned_at": "2026-10-14T12:00:00Z",
+        # No risk_score provided; must be calculated from summary
+        "summary": {"critical": 1, "high": 2, "medium": 0, "low": 0, "info": 0},  # 25 + 30 = 55
+        "modules": {},
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="score-test-02",
+        target_url="https://fallback.example.com",
+    )
+
+    assert "55/100" in html
+    assert "High Risk" in html
+    assert "v1.0" in html
+
+
+def test_render_report_html_renders_finding_fingerprints():
+    """Verify finding deterministic fingerprints (IDs) are rendered in the findings table."""
+    payload = {
+        "target": "https://fp.example.com",
+        "scanned_at": "2026-10-14T12:00:00Z",
+        "modules": {
+            "headers": {
+                "status": "success",
+                "findings": [
+                    {
+                        "code": "MISSING_CSP",
+                        "severity": "high",
+                        "title": "Missing Content-Security-Policy",
+                        "message": "CSP header is not set",
+                        "fingerprint": "a1b2c3d4e5f67890",
+                    }
+                ],
+            }
+        },
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="fp-test-01",
+        target_url="https://fp.example.com",
+    )
+
+    assert "ID: a1b2c3d4e5f6" in html
+    assert "MISSING_CSP" in html
+    assert "Missing Content-Security-Policy" in html
+
+
+def test_api_json_and_report_data_contract_alignment(client, db_session):
+    """Contract test verifying 100% parity between API JSON response and report data."""
+    import uuid
+    from app.core.security import create_access_token, get_password_hash
+    from app.db.models import ScanJob, ScanStatusEnum, User
+
+    user = User(
+        email=f"contract_{uuid.uuid4().hex[:8]}@example.com",
+        hashed_password=get_password_hash("Password123!"),
+        is_active=True,
+    )
+    db_session.add(user)
+    db_session.commit()
+    db_session.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    headers = {"Authorization": f"Bearer {token}"}
+
+    payload = {
+        "target": "https://contract.example.com",
+        "scanned_at": "2026-10-14T15:30:00+00:00",
+        "risk_score": 60,
+        "risk_level": "High Risk",
+        "score_version": "1.0.0",
+        "summary": {
+            "critical": 0,
+            "high": 4,
+            "medium": 0,
+            "low": 0,
+            "info": 0,
+        },
+        "modules": {
+            "headers": {
+                "status": "success",
+                "findings": [
+                    {
+                        "code": "MISSING_HSTS",
+                        "severity": "high",
+                        "title": "Missing Strict-Transport-Security (HSTS)",
+                        "message": "HSTS header is absent",
+                        "fingerprint": "f00ba41234567890",
+                    }
+                ],
+            }
+        },
+    }
+
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://contract.example.com",
+        status=ScanStatusEnum.COMPLETED,
+        result_payload=payload,
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    # 1. Fetch API JSON representation
+    api_resp = client.get(f"/api/v1/scans/{job.id}", headers=headers)
+    assert api_resp.status_code == 200
+    api_data = api_resp.json()
+
+    api_result = api_data["result"]
+    assert api_result["risk_score"] == 60
+    assert api_result["risk_level"] == "High Risk"
+    assert api_result["score_version"] == "1.0.0"
+    assert api_result["scanned_at"] == "2026-10-14T15:30:00+00:00"
+
+    # 2. Render report HTML representation
+    report_html = render_report_html(
+        job.result_payload,
+        scan_id=str(job.id),
+        target_url=job.target_url,
+    )
+
+    # 3. Assert zero divergence in contract fields
+    assert f"{api_result['risk_score']}/100" in report_html
+    assert api_result["risk_level"] in report_html
+    assert f"v{api_result['score_version']}" in report_html
+    assert api_result["scanned_at"] in report_html
+    assert api_data["target_url"] in report_html
+    assert "ID: f00ba4123456" in report_html
+
+

@@ -11,6 +11,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 from jinja2 import Environment, FileSystemLoader
 
+from app.services.common import calculate_risk_score
+
 logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
@@ -155,14 +157,39 @@ def render_report_html(
             dumped = dumped[:max_json_chars] + "\n... [truncated due to size limit]"
         module_jsons[name] = dumped
 
+    summary_dict = payload.get("summary", {})
+    risk_score = payload.get("risk_score")
+    risk_level = payload.get("risk_level")
+    score_version = payload.get("score_version")
+
+    score_obj = payload.get("score")
+    if isinstance(score_obj, dict):
+        if risk_score is None:
+            risk_score = score_obj.get("score")
+        if risk_level is None:
+            risk_level = score_obj.get("level")
+        if score_version is None:
+            score_version = score_obj.get("version")
+    elif isinstance(score_obj, (int, float)) and risk_score is None:
+        risk_score = int(score_obj)
+
+    if risk_score is None and summary_dict:
+        calc = calculate_risk_score(summary_dict)
+        risk_score = calc.score
+        risk_level = calc.level
+        score_version = calc.version
+
     return template.render(
         scan_id=scan_id,
         target_url=safe_target_url,
         scan_status=scan_status,
         error_message=error_message,
         has_partial_module_failures=has_partial_module_failures,
+        risk_score=risk_score,
+        risk_level=risk_level,
+        score_version=score_version,
         scanned_at=payload.get("scanned_at", ""),
-        summary=payload.get("summary", {}),
+        summary=summary_dict,
         modules=sanitized_modules,
         module_jsons=module_jsons,
         all_findings=all_findings,

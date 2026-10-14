@@ -95,6 +95,7 @@
       min-width: 80px;
       text-align: center;
       margin-right: 8px;
+      vertical-align: top;
     }
 
     .summary-box strong {
@@ -182,6 +183,7 @@
     <p><strong>Scan ID:</strong> {{ scan_id }}</p>
     <p><strong>Scanned at:</strong> {{ scanned_at }}</p>
     <p><strong>Status:</strong> <strong>{{ scan_status|upper if scan_status else 'COMPLETED' }}</strong></p>
+    <p><strong>Risk Score:</strong> <strong>{{ risk_score if risk_score is not none else '—' }}/100</strong> ({{ risk_level if risk_level else 'Unscored' }}{% if score_version %}, Algorithm {{ score_version if score_version.startswith('v') else 'v' ~ score_version }}{% endif %})</p>
   </div>
 
   {% if scan_status and scan_status|lower != 'completed' %}
@@ -207,6 +209,13 @@
 
   <h2>Summary</h2>
   <div class="summary-grid">
+    <div class="summary-box" style="border-color: #2563eb; background: #eff6ff;">
+      <strong style="color: #1e40af;">{{ risk_score if risk_score is not none else '—' }}</strong>
+      {{ risk_level if risk_level else 'Risk Score' }}
+      {% if score_version %}
+      <div style="font-size: 7.5pt; color: #64748b; margin-top: 2px;">({{ score_version if score_version.startswith('v') else 'v' ~ score_version }})</div>
+      {% endif %}
+    </div>
     {% for level in ['critical', 'high', 'medium', 'low', 'info'] %}
     <div class="summary-box">
       <strong>{{ summary.get(level, 0) }}</strong>
@@ -239,6 +248,7 @@
         <td>
           <strong>{{ f.title if f.title else f.code }}</strong>
           {% if f.code and f.title %}<br><small style="color: #64748b;">{{ f.code }}</small>{% endif %}
+          {% if f.fingerprint %}<br><small style="color: #94a3b8; font-family: monospace;">ID: {{ f.fingerprint[:12] }}</small>{% endif %}
         </td>
         <td>
           <div>{{ f.message }}</div>
