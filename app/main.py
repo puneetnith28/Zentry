@@ -51,6 +51,18 @@ async def lifespan(_app: FastAPI):
         logger.warning("Failed to recover stale scans on startup: %s", exc)
     yield
 
+    # Clean shutdown and resource disposal
+    logger.info("Executing graceful shutdown: disposing database pool and connection resources...")
+    from app.db.session import dispose_db
+    dispose_db()
+    try:
+        from app.core.celery_app import celery_app
+        celery_app.close()
+    except Exception as exc:
+        logger.warning("Error closing Celery app during shutdown: %s", exc)
+    logger.info("Graceful shutdown completed successfully.")
+
+
 
 settings = get_settings()
 

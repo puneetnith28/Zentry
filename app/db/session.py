@@ -1,3 +1,4 @@
+import logging
 import time
 from collections.abc import Generator
 
@@ -8,7 +9,9 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import get_settings
 from app.db.models import Base
 
+logger = logging.getLogger(__name__)
 settings = get_settings()
+
 
 
 def create_app_engine(database_url: str | None = None, current_settings=None):
@@ -58,7 +61,16 @@ def init_db() -> None:
     check_db_connectivity()
 
 
+def dispose_db() -> None:
+    """Explicitly dispose the SQLAlchemy engine and all pooled database connections."""
+    try:
+        engine.dispose()
+    except Exception as exc:
+        logger.warning("Error disposing database connection pool: %s", exc)
+
+
 def get_db() -> Generator[Session, None, None]:
+
     """Yield a database session, automatically rolling back on exception and closing on completion."""
     db = SessionLocal()
     try:

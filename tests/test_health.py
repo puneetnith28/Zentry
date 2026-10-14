@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
+import pytest
 from sqlalchemy.exc import OperationalError
+
 
 
 def test_health_all_healthy(client):
@@ -50,4 +52,22 @@ def test_health_all_dependencies_failing(client):
         assert data["status"] == "unhealthy"
         assert data["components"]["database"]["status"] == "unhealthy"
         assert data["components"]["broker"]["status"] == "unhealthy"
+
+
+@pytest.mark.asyncio
+async def test_lifespan_startup_and_graceful_shutdown():
+    from app.main import app, lifespan
+
+    with patch("app.main.init_db") as mock_init_db, \
+         patch("app.db.session.dispose_db") as mock_dispose_db, \
+         patch("app.core.celery_app.celery_app.close") as mock_celery_close, \
+         patch("app.worker.tasks.recover_stale_scans"):
+        async with lifespan(app):
+            mock_init_db.assert_called_once()
+            mock_dispose_db.assert_not_called()
+            mock_celery_close.assert_not_called()
+
+        mock_dispose_db.assert_called_once()
+        mock_celery_close.assert_called_once()
+
 

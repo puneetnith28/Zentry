@@ -97,3 +97,12 @@ def test_create_app_engine_pool_tuning_and_timeouts():
         assert kwargs["pool_recycle"] == 1800
         assert kwargs["connect_args"] == {"connect_timeout": 10}
 
+
+def test_dispose_db_calls_engine_dispose():
+    from app.db.session import dispose_db
+
+    with patch("app.db.session.engine.dispose") as mock_dispose:
+        dispose_db()
+        mock_dispose.assert_called_once()
+
+
