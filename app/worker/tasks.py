@@ -61,6 +61,10 @@ def classify_worker_exception(exc: BaseException) -> tuple[str, str]:
     )
 
 
+class ScanCancelledError(Exception):
+    """Raised when a scan is aborted due to user cancellation."""
+
+
 TRANSIENT_EXCEPTIONS = (
     OperationalError,
     DBAPIError,
@@ -70,9 +74,19 @@ NON_RETRYABLE_EXCEPTIONS = (
     ProhibitedDestinationError,
     TargetValidationError,
     SoftTimeLimitExceeded,
+    ScanCancelledError,
     asyncio.TimeoutError,
     TimeoutError,
 )
+
+
+def is_scan_cancelled(db: Session, scan_id: uuid.UUID) -> bool:
+    """Check if the scan has been marked CANCELLED in the database."""
+    try:
+        current_status = db.query(ScanJob.status).filter(ScanJob.id == scan_id).scalar()
+        return current_status == ScanStatusEnum.CANCELLED
+    except Exception:
+        return False
 
 
 def is_retryable_error(exc: BaseException) -> bool:
@@ -108,8 +122,12 @@ async def _run_scan_modules(
     target: str,
     options: dict[str, Any],
     module_timeout: float,
+    cancel_check: Any | None = None,
 ) -> dict[str, Any]:
     """Dynamically construct and execute the scan tasks with per-module timeout bounds."""
+    if cancel_check and cancel_check():
+        raise ScanCancelledError("Scan was cancelled before module execution")
+
     modules: dict[str, Any] = {}
     tasks: list[tuple[str, Any]] = []
 
@@ -148,10 +166,11 @@ async def _execute_scan_with_deadline(
     options: dict[str, Any],
     global_timeout: float,
     module_timeout: float,
+    cancel_check: Any | None = None,
 ) -> dict[str, Any]:
     """Execute scan modules subject to global wall-clock deadline."""
     return await asyncio.wait_for(
-        _run_scan_modules(target, options, module_timeout),
+        _run_scan_modules(target, options, module_timeout, cancel_check=cancel_check),
         timeout=global_timeout,
     )
 
@@ -216,6 +235,11 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
         )
         module_timeout = min(settings.module_scan_timeout_seconds, global_timeout)
 
+        # Cooperative abort check: abort before launching modules if cancelled
+        if is_scan_cancelled(db, job.id):
+            logger.info("Scan %s was cancelled before module execution; aborting", scan_id)
+            return
+
         try:
             # Fire off the scan modules asynchronously subject to global wall-clock deadline
             modules = asyncio.run(
@@ -224,8 +248,14 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
                     options,
                     global_timeout=global_timeout,
                     module_timeout=module_timeout,
+                    cancel_check=lambda: is_scan_cancelled(db, job.id),
                 )
             )
+
+            # Cooperative abort check: discard findings and exit if cancelled while running
+            if is_scan_cancelled(db, job.id):
+                logger.info("Scan %s was cancelled during execution; discarding findings", scan_id)
+                return
 
             # Tally up the final score (critical, high, medium, etc.)
             summary = summarize_findings(modules)
@@ -240,6 +270,13 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
             job.result_payload = payload
             job.transition_to(ScanStatusEnum.COMPLETED)
             job.error_message = None
+        except ScanCancelledError:
+            logger.info("Scan %s cancelled cooperatively during execution", scan_id)
+            if job.can_transition_to(ScanStatusEnum.CANCELLED):
+                job.transition_to(ScanStatusEnum.CANCELLED)
+                job.error_message = "Scan was cancelled by user request"
+                db.commit()
+            return
         except SoftTimeLimitExceeded as exc:
             logger.warning("Scan %s exceeded Celery soft time limit (270s)", scan_id)
             if job.can_transition_to(ScanStatusEnum.FAILED):

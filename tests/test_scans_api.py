@@ -415,3 +415,94 @@ def test_enqueue_failure_marks_scan_failed_and_returns_503(client, db_session):
     assert retry_res.status_code == 202
 
 
+def test_cancel_scan_requires_authentication(client):
+    response = client.post(f"/api/v1/scans/{uuid.uuid4()}/cancel")
+    assert response.status_code == 401
+
+
+def test_cancel_scan_enforces_user_isolation(client, db_session):
+    owner, _ = create_test_user(db_session, email_prefix="owner")
+    other, other_headers = create_test_user(db_session, email_prefix="other")
+
+    job = ScanJob(
+        user_id=owner.id,
+        target_url="https://owner-scan.example.com",
+        status=ScanStatusEnum.PENDING,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/scans/{job.id}/cancel", headers=other_headers)
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_cancel_pending_scan_succeeds(client, db_session):
+    user, headers = create_test_user(db_session)
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://pending-cancel.example.com",
+        status=ScanStatusEnum.PENDING,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    with patch("app.core.celery_app.celery_app.control.revoke") as mock_revoke:
+        response = client.post(f"/api/v1/scans/{job.id}/cancel", headers=headers)
+        mock_revoke.assert_called_once_with(str(job.id), terminate=True)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "CANCELLED"
+    assert "cancelled by user" in data["error_message"].lower()
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.CANCELLED
+    assert job.finished_at is not None
+
+
+def test_cancel_running_scan_records_timing(client, db_session):
+    from datetime import datetime, timezone
+
+    user, headers = create_test_user(db_session)
+    start_time = datetime(2026, 10, 14, 10, 0, 0, tzinfo=timezone.utc)
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://running-cancel.example.com",
+        status=ScanStatusEnum.PENDING,
+    )
+    job.transition_to(ScanStatusEnum.RUNNING, timestamp=start_time)
+    db_session.add(job)
+    db_session.commit()
+
+    with patch("app.core.celery_app.celery_app.control.revoke"):
+        response = client.post(f"/api/v1/scans/{job.id}/cancel", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "CANCELLED"
+    assert data["started_at"] is not None
+    assert data["finished_at"] is not None
+    assert data["duration_seconds"] is not None
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.CANCELLED
+
+
+def test_cancel_terminal_scan_rejected(client, db_session):
+    user, headers = create_test_user(db_session)
+    for terminal_status in ScanStatusEnum.terminal_statuses():
+        job = ScanJob(
+            user_id=user.id,
+            target_url=f"https://terminal-{terminal_status.value.lower()}.example.com",
+            status=terminal_status,
+        )
+        db_session.add(job)
+        db_session.commit()
+
+        response = client.post(f"/api/v1/scans/{job.id}/cancel", headers=headers)
+        assert response.status_code == 400
+        assert f"Cannot cancel scan in terminal status '{terminal_status.value}'" in response.json()["detail"]
+
+
+

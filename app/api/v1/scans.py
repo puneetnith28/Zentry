@@ -220,3 +220,43 @@ def get_scan(
         result=result,
         error_message=job.error_message,
     )
+
+
+@router.post(
+    "/{scan_id}/cancel",
+    response_model=ScanDetailResponse,
+)
+def cancel_scan(
+    scan_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> ScanDetailResponse:
+    job = db.get(ScanJob, scan_id)
+    if job is None or (job.user_id != current_user.id and not current_user.is_superuser):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Scan not found",
+        )
+
+    # Check if scan is already in a terminal state
+    if job.status in ScanStatusEnum.terminal_statuses():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot cancel scan in terminal status '{job.status.value}'",
+        )
+
+    # Transition to CANCELLED atomically
+    job.transition_to(ScanStatusEnum.CANCELLED)
+    job.error_message = "Scan was cancelled by user request"
+    db.commit()
+    db.refresh(job)
+
+    # Attempt to revoke Celery background task if queued or running
+    try:
+        from app.core.celery_app import celery_app
+        celery_app.control.revoke(str(job.id), terminate=True)
+    except Exception as exc:
+        logger.warning("Failed to revoke Celery task for scan %s: %s", job.id, exc)
+
+    return get_scan(scan_id=scan_id, current_user=current_user, db=db)
+

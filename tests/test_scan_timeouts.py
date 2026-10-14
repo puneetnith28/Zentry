@@ -280,5 +280,44 @@ def test_duplicate_task_delivery_on_concurrent_running_scan_ignored(db_session):
     assert job.status == ScanStatusEnum.RUNNING
 
 
+def test_worker_cooperative_abort_before_execution(db_session):
+    job = ScanJob(
+        target_url="https://cancelled-before-exec.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    job.transition_to(ScanStatusEnum.CANCELLED)
+    db_session.commit()
+
+    with patch("app.worker.tasks._execute_scan_with_deadline") as mock_exec:
+        scan_task(str(job.id), db=db_session)
+        mock_exec.assert_not_called()
+
+
+def test_worker_cooperative_abort_during_execution(db_session):
+    from app.worker.tasks import ScanCancelledError
+
+    job = ScanJob(
+        target_url="https://cancelled-during-exec.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    with patch(
+        "app.worker.tasks._execute_scan_with_deadline",
+        side_effect=ScanCancelledError("User requested abort"),
+    ):
+        scan_task(str(job.id), db=db_session)
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.CANCELLED
+    assert "cancelled by user" in job.error_message.lower()
+
+
+
 
 
