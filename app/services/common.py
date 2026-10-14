@@ -40,6 +40,7 @@ CANONICAL_TITLES: Final[dict[str, str]] = {
     "COOKIE_HOST_PREFIX_INVALID": "Cookie __Host- Prefix Misconfiguration",
     "COOKIE_SECURE_PREFIX_INVALID": "Cookie __Secure- Prefix Misconfiguration",
     # Ports
+    "PORT_OPEN": "Exposed Network Port",
     "FTP_OPEN": "Open FTP Service (Port 21)",
     "TELNET_OPEN": "Open Telnet Service (Port 23)",
     "SMB_OPEN": "Open SMB Service (Port 445)",
@@ -91,6 +92,7 @@ CANONICAL_REMEDIATIONS: Final[dict[str, str]] = {
     "COOKIE_HOST_PREFIX_INVALID": "Ensure cookies with '__Host-' prefix have Secure, Path=/, and omit the Domain attribute.",
     "COOKIE_SECURE_PREFIX_INVALID": "Ensure cookies with '__Secure-' prefix have the Secure attribute enabled.",
     # Ports
+    "PORT_OPEN": "Review network service necessity and restrict access using network firewalls or localhost binding.",
     "FTP_OPEN": "Disable unencrypted FTP service on port 21/tcp or restrict access to private networks.",
     "TELNET_OPEN": "Disable unencrypted Telnet on port 23/tcp and migrate to SSH.",
     "SMB_OPEN": "Block external exposure of port 445/tcp using network firewalls.",
@@ -146,6 +148,8 @@ class Finding:
             object.__setattr__(self, "description", self.message)
         if not self.evidence:
             object.__setattr__(self, "evidence", self.message)
+        elif len(self.evidence) > 4096:
+            object.__setattr__(self, "evidence", self.evidence[:4080] + "... [truncated]")
         if not self.remediation:
             object.__setattr__(
                 self,
