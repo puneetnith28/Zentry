@@ -1,6 +1,9 @@
 import pytest
 import httpx
 
+pytestmark = pytest.mark.security
+
+
 from app.core.outbound import (
     DEFAULT_MAX_RESPONSE_BYTES,
     ProhibitedDestinationError,

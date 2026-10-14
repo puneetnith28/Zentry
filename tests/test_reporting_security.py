@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+pytestmark = pytest.mark.security
+
 from app.services.pdf_generator import (
+
     generate_pdf,
     render_report_html,
     sanitize_target_url_for_report,

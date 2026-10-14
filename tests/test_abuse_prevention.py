@@ -3,6 +3,9 @@ import uuid
 from unittest.mock import patch
 import pytest
 
+pytestmark = pytest.mark.security
+
+
 from app.core.config import get_settings
 from app.core.rate_limit import limiter
 from app.core.security import create_access_token, get_password_hash

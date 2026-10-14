@@ -5,7 +5,10 @@ from uuid import uuid4
 
 import pytest
 
+pytestmark = pytest.mark.security
+
 from app.core.security import create_access_token, get_password_hash
+
 from app.db.models import ScanJob, ScanStatusEnum, User
 
 
