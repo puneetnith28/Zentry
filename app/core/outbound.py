@@ -10,7 +10,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 import ipaddress
 import socket
-from typing import AsyncIterator, Final
+from typing import Any, AsyncIterator, Final
 from urllib.parse import urljoin, urlparse
 
 import httpcore

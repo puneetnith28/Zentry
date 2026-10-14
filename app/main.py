@@ -4,7 +4,6 @@ import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
 
 import redis
 from fastapi import FastAPI, HTTPException, Request, status
@@ -16,7 +15,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.v1 import auth, reports, scans
 from app.core.config import get_settings
-from app.core.logging import redact_sensitive_data, redact_sensitive_headers
+from app.core.logging import redact_sensitive_headers
 from app.db.session import init_db
 
 logger = logging.getLogger(__name__)

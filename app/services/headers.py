@@ -19,7 +19,6 @@ from app.core.outbound import (
     MaxRedirectsExceededError,
     ProhibitedDestinationError,
     ResponseBodyTooLargeError,
-    safe_request,
     safe_stream_request,
 )
 from app.services.common import (

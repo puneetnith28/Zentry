@@ -1,0 +1,44 @@
+# Ruff configuration for Zentry Backend
+target-version = "py311"
+line-length = 120
+
+[lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "B",   # flake8-bugbear
+    "S",   # flake8-bandit (security checks)
+]
+ignore = [
+    "S101", # allow assert in tests
+    "S104", # binding to 0.0.0.0 is intentional in container environments
+    "S105", # hardcoded password string detection false positives
+    "S106", # hardcoded password func argument
+    "B008", # function calls in FastAPI Depends default arguments
+    "E501", # line length handled by formatter
+    "S311", # pseudo-random generators
+    "S608", # SQL injection false positive on raw text in migrations/metadata
+    "B007", # loop control variable not used
+    "B904", # raise ... from err in HTTPException responses
+    "B905", # zip without strict parameter
+    "S108", # /tmp paths for report cache
+    "S110", # try-except-pass in worker cleanup/error recovery
+    "S303", # SHA1 used for TLS certificate fingerprint reporting
+    "W291", # trailing whitespace
+    "W292", # no newline at end of file
+    "W293", # blank line contains whitespace
+    "E402", # module level import order
+]
+
+[lint.per-file-ignores]
+"tests/*" = [
+    "S101", "S105", "S106", "S108", "S311", "B011",
+    "F841", "E402", "B007", "F401", "E711", "E712", "F811"
+]
+"alembic/*" = ["E402", "F401", "S105", "F841"]
+"worker_health.py" = ["S101"]
+
+[format]
+quote-style = "double"
+indent-style = "space"

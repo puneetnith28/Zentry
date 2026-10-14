@@ -7,7 +7,6 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
-from app.db.models import Base
 
 logger = logging.getLogger(__name__)
 settings = get_settings()

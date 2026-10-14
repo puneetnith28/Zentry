@@ -80,7 +80,7 @@ class StructuredJSONFormatter(logging.Formatter):
         }
 
         if hasattr(record, "request_id"):
-            record_dict["request_id"] = getattr(record, "request_id")
+            record_dict["request_id"] = record.request_id
 
         if record.exc_info:
             record_dict["exception"] = self.formatException(record.exc_info)

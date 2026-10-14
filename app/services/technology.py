@@ -14,12 +14,10 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Final
-from urllib.parse import urlparse
 
 import httpx
 
 from app.core.outbound import (
-    DEFAULT_TECH_MAX_RESPONSE_BYTES,
     DNSResolutionError,
     MaxRedirectsExceededError,
     ProhibitedDestinationError,
