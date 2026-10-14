@@ -7,6 +7,7 @@ Uses asyncio and the stdlib socket stack only. No subprocess or shell execution.
 from __future__ import annotations
 
 import asyncio
+import errno
 import socket
 from dataclasses import dataclass, field
 from typing import Any, Final
@@ -39,6 +40,22 @@ DANGEROUS_OPEN_PORTS: Final[dict[int, tuple[str, FindingSeverity]]] = {
     5432: ("POSTGRES_OPEN", FindingSeverity.MEDIUM),
 }
 MAX_CONCURRENT: Final[int] = 10
+MAX_PORT_COUNT: Final[int] = 50
+
+CLOSED_ERRNOS: Final[frozenset[int]] = frozenset({
+    errno.ECONNREFUSED,
+    getattr(errno, "ECONNRESET", 104),
+})
+
+FILTERED_ERRNOS: Final[frozenset[int]] = frozenset({
+    errno.ETIMEDOUT,
+    getattr(errno, "EHOSTUNREACH", 113),
+    getattr(errno, "ENETUNREACH", 101),
+    getattr(errno, "EHOSTDOWN", 112),
+    getattr(errno, "ENETDOWN", 100),
+    getattr(errno, "EPERM", 1),
+    getattr(errno, "EACCES", 13),
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,20 +85,35 @@ def _resolve_host(target: str) -> str:
 
 
 async def _probe_port(host: str, port: int, *, timeout: float) -> str:
-    """Attempt a raw TCP connection to see if a specific port is listening."""
+    """Attempt a raw TCP connection to determine port state: 'open', 'closed', or 'filtered'."""
     try:
-        # Just establish the connection and immediately tear it down
         _, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
             timeout=timeout,
         )
-        writer.close()
-        await writer.wait_closed()
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
         return "open"
-    except (asyncio.TimeoutError, ConnectionRefusedError, OSError):
-        # We treat timeouts, refused connections, and network errors all as 'closed'
-        # for simplicity, though technically they could be 'filtered' by a firewall.
+    except (asyncio.TimeoutError, TimeoutError, socket.timeout):
+        return "filtered"
+    except ConnectionRefusedError:
         return "closed"
+    except ConnectionResetError:
+        return "closed"
+    except OSError as exc:
+        if exc.errno in CLOSED_ERRNOS:
+            return "closed"
+        if exc.errno in FILTERED_ERRNOS:
+            return "filtered"
+        err_msg = str(exc).lower()
+        if any(term in err_msg for term in ("timeout", "timed out", "unreachable", "filtered", "dropped", "no route")):
+            return "filtered"
+        if any(term in err_msg for term in ("refused", "reset")):
+            return "closed"
+        return "filtered"
 
 
 async def _scan_ports(
@@ -91,27 +123,29 @@ async def _scan_ports(
     timeout: float,
 ) -> PortScanResult:
     """Coordinate the concurrent scanning of multiple ports."""
-    # Prevent flooding the OS with too many simultaneous open sockets
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
     open_ports: list[int] = []
     closed_ports: list[int] = []
+    filtered_ports: list[int] = []
 
     async def scan_one(port: int) -> None:
         async with semaphore:
             state = await _probe_port(host, port, timeout=timeout)
             if state == "open":
                 open_ports.append(port)
-            else:
+            elif state == "closed":
                 closed_ports.append(port)
+            elif state == "filtered":
+                filtered_ports.append(port)
 
-    # Fire them all off at once
-    await asyncio.gather(*[scan_one(p) for p in ports])
+    if ports:
+        await asyncio.gather(*[scan_one(p) for p in ports])
 
     open_ports.sort()
     closed_ports.sort()
+    filtered_ports.sort()
 
     findings: list[Finding] = []
-    # Flag any notoriously dangerous services exposed to the internet
     for port in open_ports:
         if port in DANGEROUS_OPEN_PORTS:
             code, severity = DANGEROUS_OPEN_PORTS[port]
@@ -123,7 +157,6 @@ async def _scan_ports(
                 )
             )
 
-    # If they are serving unencrypted HTTP but no HTTPS, that's a problem
     if 80 in open_ports and 443 not in open_ports:
         findings.append(
             Finding(
@@ -138,7 +171,7 @@ async def _scan_ports(
         host=host,
         open_ports=open_ports,
         closed_ports=closed_ports,
-        filtered_ports=[],
+        filtered_ports=filtered_ports,
         findings=findings,
     )
 
@@ -160,7 +193,23 @@ async def scan_ports_async(
             error=ModuleScanError(code="INVALID_TARGET", message=str(exc)),
         ).to_dict()
 
-    port_tuple = tuple(ports) if ports else DEFAULT_PORTS
+    if ports is not None:
+        valid_ports: list[int] = []
+        seen: set[int] = set()
+        for p in ports:
+            if isinstance(p, int) and not isinstance(p, bool) and 1 <= p <= 65535:
+                if p not in seen:
+                    seen.add(p)
+                    valid_ports.append(p)
+        if not valid_ports:
+            return PortScanResult(
+                status=ModuleScanStatus.ERROR,
+                host=host,
+                error=ModuleScanError(code="INVALID_PORTS", message="No valid ports provided for scan"),
+            ).to_dict()
+        port_tuple = tuple(valid_ports[:MAX_PORT_COUNT])
+    else:
+        port_tuple = DEFAULT_PORTS
 
     try:
         # Validate that the host resolves to an authorized public destination
