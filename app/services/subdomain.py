@@ -39,9 +39,9 @@ DEFAULT_TIMEOUT: Final[float] = 60.0
 MAX_RESULTS: Final[int] = 200
 
 _SUBDOMAIN_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$", re.IGNORECASE
+    r"^[a-z0-9]([a-z0-9\-]{0,61}[a-z0-9])?$", re.IGNORECASE
 )
-"""Basic hostname label validation regex."""
+"""Strict RFC 1035/1123 hostname label validation regex."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,25 +93,37 @@ def _extract_domain(target: str) -> str:
 
 
 def _is_valid_subdomain(candidate: str, domain: str) -> bool:
-    """Return True when *candidate* is a plausible subdomain of *domain*."""
+    """Return True when *candidate* is a valid DNS subdomain of *domain* per RFC 1035/1123."""
     if not candidate or not domain:
         return False
 
     cd = candidate.strip().lower().rstrip(".")
-    dm = domain.lower().rstrip(".")
+    dm = domain.strip().lower().rstrip(".")
+
+    if not cd or not dm:
+        return False
+
+    if len(cd) > 253:
+        return False
 
     if cd == dm:
         return False
 
-    if cd.startswith("*.") or "*" in cd:
+    if any(char in cd for char in ("*", "@", "/", "\\", ":", " ", "\t", "\n", "\r")):
         return False
 
     if not cd.endswith(f".{dm}"):
         return False
 
     subdomain_part = cd[: -(len(dm) + 1)]
-    for label in subdomain_part.split("."):
-        if not label or not _SUBDOMAIN_RE.match(label):
+    if not subdomain_part:
+        return False
+
+    labels = cd.split(".")
+    for label in labels:
+        if not label or len(label) > 63:
+            return False
+        if not _SUBDOMAIN_RE.match(label):
             return False
 
     return True
@@ -121,7 +133,7 @@ async def _fetch_crtsh(
     domain: str,
     timeout: float = DEFAULT_TIMEOUT,
     client: httpx.AsyncClient | None = None,
-) -> list[str]:
+) -> tuple[list[str], ModuleScanError | None]:
     """Query crt.sh certificate transparency logs for subdomains of *domain*."""
     params = {"q": f"%.{domain}", "output": "json"}
     headers = {"User-Agent": "Zentry-Security-Scanner/1.0"}
@@ -135,13 +147,34 @@ async def _fetch_crtsh(
                 response = await safe_client.get(CRTSH_URL, params=params, headers=headers)
                 response.raise_for_status()
                 data = response.json()
-    except (httpx.HTTPStatusError, httpx.RequestError, ValueError, ProhibitedDestinationError) as exc:
-        logger.warning("crt.sh query failed for %s: %s", domain, exc)
-        return []
+    except httpx.TimeoutException as exc:
+        logger.warning("crt.sh query timed out for %s: %s", domain, exc)
+        return [], ModuleScanError(code="PROVIDER_TIMEOUT", message=f"crt.sh query timed out: {exc}")
+    except httpx.HTTPStatusError as exc:
+        logger.warning("crt.sh returned HTTP error for %s: %s", domain, exc)
+        return [], ModuleScanError(
+            code="PROVIDER_ERROR",
+            message=f"crt.sh returned HTTP {exc.response.status_code}: {exc}",
+        )
+    except (ProhibitedDestinationError, DNSResolutionError) as exc:
+        logger.warning("crt.sh destination error for %s: %s", domain, exc)
+        return [], ModuleScanError(code="PROHIBITED_DESTINATION", message=str(exc))
+    except httpx.RequestError as exc:
+        logger.warning("crt.sh connection failed for %s: %s", domain, exc)
+        return [], ModuleScanError(code="PROVIDER_UNAVAILABLE", message=f"crt.sh connection failed: {exc}")
+    except (ValueError, TypeError) as exc:
+        logger.warning("crt.sh returned invalid JSON for %s: %s", domain, exc)
+        return [], ModuleScanError(code="PROVIDER_MALFORMED_RESPONSE", message=f"crt.sh invalid JSON: {exc}")
+    except Exception as exc:
+        logger.warning("crt.sh unexpected failure for %s: %s", domain, exc)
+        return [], ModuleScanError(code="SCAN_FAILED", message=str(exc))
 
     if not isinstance(data, list):
         logger.warning("crt.sh returned unexpected payload for %s: %r", domain, type(data))
-        return []
+        return [], ModuleScanError(
+            code="PROVIDER_MALFORMED_RESPONSE",
+            message=f"crt.sh returned non-list JSON payload ({type(data).__name__})",
+        )
 
     names: list[str] = []
     for entry in data:
@@ -153,7 +186,7 @@ async def _fetch_crtsh(
                 clean = line.strip().lower()
                 if clean:
                     names.append(clean)
-    return names
+    return names, None
 
 
 def _deduplicate(entries: list[str]) -> list[str]:
@@ -253,7 +286,17 @@ async def discover_subdomains_async(
 
     logger.info("Subdomain discovery starting for %s", domain)
 
-    raw_names = await _fetch_crtsh(domain, timeout=timeout, client=client)
+    raw_names, error = await _fetch_crtsh(domain, timeout=timeout, client=client)
+    if error is not None:
+        logger.warning("Subdomain discovery failed for %s: %s", domain, error.message)
+        return SubdomainScanResult(
+            status=ModuleScanStatus.ERROR,
+            target=domain,
+            subdomains=[],
+            total_discovered=0,
+            findings=[],
+            error=error,
+        ).to_dict()
 
     validated: list[str] = [
         name for name in raw_names if _is_valid_subdomain(name, domain)

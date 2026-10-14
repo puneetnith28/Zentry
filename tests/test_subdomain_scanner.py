@@ -204,9 +204,22 @@ async def test_discover_subdomains_async_network_error(monkeypatch) -> None:
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     result = await discover_subdomains_async("example.com")
-    # Should return success with empty results (graceful degradation)
-    assert result["status"] == "success"
-    assert result["total_discovered"] == 0
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
+async def test_discover_subdomains_async_timeout(monkeypatch) -> None:
+    import httpx
+    from app.services.subdomain import discover_subdomains_async
+
+    async def fake_get(*args, **kwargs):
+        raise httpx.ReadTimeout("Query to crt.sh timed out")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    result = await discover_subdomains_async("example.com")
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_TIMEOUT"
 
 
 @pytest.mark.asyncio
@@ -228,8 +241,8 @@ async def test_discover_subdomains_async_non_list_response(monkeypatch) -> None:
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     result = await discover_subdomains_async("example.com")
-    assert result["status"] == "success"
-    assert result["total_discovered"] == 0
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_MALFORMED_RESPONSE"
 
 
 @pytest.mark.asyncio
@@ -306,6 +319,32 @@ def test_discover_subdomains_sync_invalid() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discover_subdomains_empty_successful_response(monkeypatch) -> None:
+    import httpx
+    from app.services.subdomain import discover_subdomains_async
+
+    class FakeEmptyResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    async def fake_get(*args, **kwargs):
+        return FakeEmptyResponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+    result = await discover_subdomains_async("example.com")
+    assert result["status"] == "success"
+    assert result["total_discovered"] == 0
+    assert result["subdomains"] == []
+    codes = {f["code"] for f in result.get("findings", [])}
+    assert "NO_SUBDOMAINS_DISCOVERED" in codes
+
+
+@pytest.mark.asyncio
 async def test_discover_subdomains_http_403(monkeypatch) -> None:
     import httpx
     from app.services.subdomain import discover_subdomains_async
@@ -324,9 +363,8 @@ async def test_discover_subdomains_http_403(monkeypatch) -> None:
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     result = await discover_subdomains_async("example.com")
-    # Should gracefully degrade — 403 from crt.sh is common
-    assert result["status"] == "success"
-    assert result["total_discovered"] == 0
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_ERROR"
 
 
 @pytest.mark.asyncio
@@ -348,8 +386,24 @@ async def test_discover_subdomains_invalid_json(monkeypatch) -> None:
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
     result = await discover_subdomains_async("example.com")
-    assert result["status"] == "success"
-    assert result["total_discovered"] == 0
+    assert result["status"] == "error"
+    assert result["error"]["code"] == "PROVIDER_MALFORMED_RESPONSE"
+
+
+def test_is_valid_subdomain_strict_validation() -> None:
+    # Trailing hyphen in label
+    assert _is_valid_subdomain("bad-.example.com", "example.com") is False
+    # Empty label / multiple dots
+    assert _is_valid_subdomain("a..b.example.com", "example.com") is False
+    # Over 63 chars in label
+    long_label = "a" * 64
+    assert _is_valid_subdomain(f"{long_label}.example.com", "example.com") is False
+    # Exactly 63 chars in label
+    valid_long_label = "a" * 63
+    assert _is_valid_subdomain(f"{valid_long_label}.example.com", "example.com") is True
+    # Special characters
+    assert _is_valid_subdomain("sub;domain.example.com", "example.com") is False
+    assert _is_valid_subdomain("sub/domain.example.com", "example.com") is False
 
 
 @pytest.mark.asyncio
