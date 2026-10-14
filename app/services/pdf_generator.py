@@ -86,6 +86,8 @@ def render_report_html(
     *,
     scan_id: str,
     target_url: str,
+    scan_status: str | None = None,
+    error_message: str | None = None,
     max_findings: int = DEFAULT_MAX_FINDINGS,
     max_json_chars: int = DEFAULT_MAX_JSON_CHARS,
 ) -> str:
@@ -94,6 +96,11 @@ def render_report_html(
     all_findings: list[dict[str, Any]] = []
 
     safe_target_url = sanitize_target_url_for_report(target_url)
+
+    if scan_status is None:
+        scan_status = str(payload.get("status") or "completed")
+    if error_message is None:
+        error_message = payload.get("error") or payload.get("error_message") or ""
 
     sanitized_modules: dict[str, Any] = {}
     for module_name, module_data in modules.items():
@@ -116,6 +123,17 @@ def render_report_html(
                     cleaned_findings_list.append(f)
             mod_copy["findings"] = cleaned_findings_list
         sanitized_modules[module_name] = mod_copy
+
+    # Check for partial module failures
+    module_status_map = payload.get("summary", {}).get("module_status", {})
+    has_partial_module_failures = False
+    for m_name, m_data in sanitized_modules.items():
+        m_stat = module_status_map.get(m_name)
+        if not m_stat and isinstance(m_data, dict):
+            m_stat = m_data.get("status")
+        if m_stat and str(m_stat).lower() in ("error", "failed", "timeout"):
+            has_partial_module_failures = True
+            break
 
     # Sort deterministically by severity priority, then title
     all_findings.sort(
@@ -140,6 +158,9 @@ def render_report_html(
     return template.render(
         scan_id=scan_id,
         target_url=safe_target_url,
+        scan_status=scan_status,
+        error_message=error_message,
+        has_partial_module_failures=has_partial_module_failures,
         scanned_at=payload.get("scanned_at", ""),
         summary=payload.get("summary", {}),
         modules=sanitized_modules,
@@ -157,6 +178,8 @@ def generate_pdf(
     *,
     scan_id: str,
     target_url: str,
+    scan_status: str | None = None,
+    error_message: str | None = None,
     timeout: float = DEFAULT_PDF_TIMEOUT_SECONDS,
     max_findings: int = DEFAULT_MAX_FINDINGS,
 ) -> bytes:
@@ -172,6 +195,8 @@ def generate_pdf(
         payload,
         scan_id=scan_id,
         target_url=target_url,
+        scan_status=scan_status,
+        error_message=error_message,
         max_findings=max_findings,
     )
 

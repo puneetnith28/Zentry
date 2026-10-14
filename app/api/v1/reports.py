@@ -26,17 +26,22 @@ def get_scan_pdf(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Scan not found",
         )
-    if job.status != ScanStatusEnum.COMPLETED or not job.result_payload:
+    if (job.status in (ScanStatusEnum.PENDING, ScanStatusEnum.RUNNING)) or (
+        job.status == ScanStatusEnum.COMPLETED and not job.result_payload
+    ):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Scan is not completed or has no results",
         )
 
     try:
+        payload = job.result_payload or {}
         pdf_bytes = generate_pdf(
-            job.result_payload,
+            payload,
             scan_id=str(job.id),
             target_url=job.target_url,
+            scan_status=job.status.value,
+            error_message=job.error_message,
         )
     except Exception as e:
         import logging

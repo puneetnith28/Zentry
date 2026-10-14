@@ -109,6 +109,69 @@
       overflow-wrap: break-word;
       white-space: pre-wrap;
     }
+
+    .alert-banner {
+      border: 2px solid #b91c1c;
+      background: #fef2f2;
+      color: #991b1b;
+      padding: 14px 18px;
+      border-radius: 6px;
+      margin: 16px 0;
+    }
+
+    .alert-banner h3 {
+      margin: 0 0 6px 0;
+      font-size: 13pt;
+      color: #991b1b;
+    }
+
+    .alert-banner p {
+      margin: 0;
+      font-size: 9.5pt;
+      line-height: 1.4;
+    }
+
+    .alert-cancelled {
+      border-color: #d97706;
+      background: #fffbeb;
+      color: #92400e;
+    }
+
+    .alert-cancelled h3 {
+      color: #92400e;
+    }
+
+    .alert-partial {
+      border-color: #d97706;
+      background: #fffbeb;
+      color: #92400e;
+    }
+
+    .alert-partial h3 {
+      color: #92400e;
+    }
+
+    .module-badge-success {
+      background: #15803d;
+      color: #fff;
+      font-size: 8pt;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: normal;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
+
+    .module-badge-error {
+      background: #b91c1c;
+      color: #fff;
+      font-size: 8pt;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-weight: normal;
+      vertical-align: middle;
+      margin-left: 8px;
+    }
   </style>
 </head>
 
@@ -118,7 +181,30 @@
     <p><strong>Target:</strong> {{ target_url }}</p>
     <p><strong>Scan ID:</strong> {{ scan_id }}</p>
     <p><strong>Scanned at:</strong> {{ scanned_at }}</p>
+    <p><strong>Status:</strong> <strong>{{ scan_status|upper if scan_status else 'COMPLETED' }}</strong></p>
   </div>
+
+  {% if scan_status and scan_status|lower != 'completed' %}
+  <div class="alert-banner alert-{{ scan_status|lower }}">
+    <h3>Scan Status: {{ scan_status|upper }}</h3>
+    <p>
+      <strong>Notice:</strong> This security scan did not complete normally. Findings and metrics in this report
+      are partial or incomplete and must NOT be interpreted as a clean security posture or proof of absence of vulnerabilities.
+      {% if error_message %}
+      <br><strong>Failure Reason:</strong> {{ error_message }}
+      {% endif %}
+    </p>
+  </div>
+  {% elif has_partial_module_failures %}
+  <div class="alert-banner alert-partial">
+    <h3>Partial Scan Coverage Warning</h3>
+    <p>
+      <strong>Notice:</strong> One or more scanner modules encountered errors and could not complete analysis.
+      Results for unaffected modules are presented below, but overall posture assessment is partial and incomplete.
+    </p>
+  </div>
+  {% endif %}
+
   <h2>Summary</h2>
   <div class="summary-grid">
     {% for level in ['critical', 'high', 'medium', 'low', 'info'] %}
@@ -227,7 +313,20 @@
   {% endif %}
 
   {% for module_name, module_json in module_jsons.items() %}
-  <h2>{{ module_name|upper }} Module</h2>
+  {% set m_status = summary.get('module_status', {}).get(module_name, modules.get(module_name, {}).get('status')) %}
+  <h2>
+    {{ module_name|upper }} Module
+    {% if m_status %}
+      <span class="module-badge-{{ 'success' if m_status|lower == 'success' else 'error' }}">
+        {{ m_status|upper }}
+      </span>
+    {% endif %}
+  </h2>
+  {% if modules.get(module_name, {}).get('error') %}
+  <p class="meta" style="color: #b91c1c; font-weight: bold;">
+    Module Error: {{ modules[module_name].error }}
+  </p>
+  {% endif %}
   <pre>{{ module_json }}</pre>
   {% endfor %}
 </body>

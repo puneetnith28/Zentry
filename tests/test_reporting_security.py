@@ -294,3 +294,85 @@ def test_generate_pdf_with_adversarial_payload_executes_safely():
         rendered_html = mock_html_cls.call_args[1]["string"]
         assert "<script>alert" not in rendered_html
         assert "<img src=x onerror" not in rendered_html
+
+
+def test_render_report_html_failed_scan_displays_warning_banner():
+    """Verify failed scan reports display prominent warning banner and failure reason."""
+    payload = {
+        "target": "https://failed.example.com",
+        "scanned_at": "2026-10-14T00:00:00Z",
+        "modules": {},
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="failed-scan-01",
+        target_url="https://failed.example.com",
+        scan_status="FAILED",
+        error_message="Host unreachable or connection timed out",
+    )
+
+    assert "Scan Status: FAILED" in html
+    assert "alert-failed" in html
+    assert "must NOT be interpreted as a clean security posture" in html
+    assert "Host unreachable or connection timed out" in html
+
+
+def test_render_report_html_cancelled_scan_displays_warning_banner():
+    """Verify cancelled scan reports display prominent warning banner."""
+    payload = {
+        "target": "https://cancelled.example.com",
+        "scanned_at": "2026-10-14T00:00:00Z",
+        "modules": {},
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="cancelled-scan-01",
+        target_url="https://cancelled.example.com",
+        scan_status="CANCELLED",
+        error_message="Scan aborted by operator",
+    )
+
+    assert "Scan Status: CANCELLED" in html
+    assert "alert-cancelled" in html
+    assert "must NOT be interpreted as a clean security posture" in html
+    assert "Scan aborted by operator" in html
+
+
+def test_render_report_html_partial_module_failures_displays_warning():
+    """Verify completed scans with partial module failures show warning and badges."""
+    payload = {
+        "target": "https://partial.example.com",
+        "scanned_at": "2026-10-14T00:00:00Z",
+        "summary": {
+            "module_status": {
+                "headers": "success",
+                "ssl": "error",
+            }
+        },
+        "modules": {
+            "headers": {
+                "status": "success",
+                "findings": [],
+            },
+            "ssl": {
+                "status": "error",
+                "error": "Handshake failure during cipher enumeration",
+                "findings": [],
+            },
+        },
+    }
+
+    html = render_report_html(
+        payload,
+        scan_id="partial-scan-01",
+        target_url="https://partial.example.com",
+        scan_status="COMPLETED",
+    )
+
+    assert "Partial Scan Coverage Warning" in html
+    assert "One or more scanner modules encountered errors" in html
+    assert "module-badge-error" in html
+    assert "Module Error: Handshake failure during cipher enumeration" in html
+

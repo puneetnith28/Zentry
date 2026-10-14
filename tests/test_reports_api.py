@@ -126,3 +126,47 @@ def test_superuser_can_download_any_report(mock_pdf, client, db_session):
     assert response.status_code == 200
     assert response.content == b"%PDF-1.4 admin pdf content"
     mock_pdf.assert_called_once()
+
+
+@patch("app.api.v1.reports.generate_pdf", return_value=b"%PDF-1.4 failed scan report")
+def test_report_download_failed_scan_success(mock_pdf, client, db_session):
+    user, headers = create_test_user(db_session)
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://failed.example.com",
+        status=ScanStatusEnum.FAILED,
+        error_message="Connection timeout during network probe",
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 failed scan report"
+    assert f'filename="zentry-report-{job.id}.pdf"' in response.headers["content-disposition"]
+    mock_pdf.assert_called_once()
+    assert mock_pdf.call_args[1]["scan_status"] == "FAILED"
+    assert mock_pdf.call_args[1]["error_message"] == "Connection timeout during network probe"
+
+
+@patch("app.api.v1.reports.generate_pdf", return_value=b"%PDF-1.4 cancelled scan report")
+def test_report_download_cancelled_scan_success(mock_pdf, client, db_session):
+    user, headers = create_test_user(db_session)
+    job = ScanJob(
+        user_id=user.id,
+        target_url="https://cancelled.example.com",
+        status=ScanStatusEnum.CANCELLED,
+        error_message="User requested cancellation",
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    response = client.get(f"/api/v1/reports/{job.id}/pdf", headers=headers)
+    assert response.status_code == 200
+    assert response.content == b"%PDF-1.4 cancelled scan report"
+    mock_pdf.assert_called_once()
+    assert mock_pdf.call_args[1]["scan_status"] == "CANCELLED"
