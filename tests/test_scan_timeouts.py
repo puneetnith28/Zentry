@@ -140,3 +140,107 @@ def test_scan_task_sanitizes_internal_exception(db_session):
     assert "/root/.secret_key" not in job.error_message
 
 
+def test_is_retryable_error_distinguishes_transient_and_permanent():
+    import socket
+    from celery.exceptions import SoftTimeLimitExceeded
+    from sqlalchemy.exc import DBAPIError, OperationalError
+    from app.core.outbound import ProhibitedDestinationError
+    from app.core.target_validation import TargetValidationError
+    from app.worker.tasks import is_retryable_error
+
+    # Transient errors are retryable
+    assert is_retryable_error(OperationalError("select 1", [], Exception("db disconnect"))) is True
+    assert is_retryable_error(DBAPIError("select 1", [], Exception("connection reset"))) is True
+
+    # Security policy and timeouts are permanent and MUST NOT be retried
+    assert is_retryable_error(ProhibitedDestinationError("SSRF blocked")) is False
+    assert is_retryable_error(TargetValidationError("Invalid target")) is False
+    assert is_retryable_error(SoftTimeLimitExceeded()) is False
+    assert is_retryable_error(asyncio.TimeoutError()) is False
+    assert is_retryable_error(ValueError("Invalid syntax")) is False
+    assert is_retryable_error(socket.gaierror("Name resolution failed")) is False
+
+
+def test_scan_task_does_not_retry_policy_blocks(db_session):
+    from app.core.outbound import ProhibitedDestinationError
+
+    job = ScanJob(
+        target_url="https://policy-blocked.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    with patch.object(scan_task, "retry") as mock_retry:
+        with patch(
+            "app.worker.tasks._execute_scan_with_deadline",
+            side_effect=ProhibitedDestinationError("Blocked loopback destination"),
+        ):
+            scan_task(str(job.id), db=db_session)
+
+        # Must NOT attempt Celery retry on security policy blocks
+        mock_retry.assert_not_called()
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.FAILED
+    assert "[POLICY_BLOCKED]" in job.error_message
+
+
+def test_scan_task_triggers_retry_on_transient_db_error(db_session):
+    from celery.exceptions import Retry
+    from sqlalchemy.exc import OperationalError
+
+    job = ScanJob(
+        target_url="https://transient-db-err.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    db_err = OperationalError("SELECT 1", [], Exception("connection reset by peer"))
+    with patch.object(scan_task, "retry", side_effect=Retry()) as mock_retry:
+        with patch(
+            "app.worker.tasks._execute_scan_with_deadline",
+            side_effect=db_err,
+        ):
+            with pytest.raises(Retry):
+                scan_task(str(job.id), db=db_session)
+
+        mock_retry.assert_called_once()
+        _, kwargs = mock_retry.call_args
+        assert kwargs.get("max_retries") == 3
+        assert kwargs.get("countdown") == 2  # 2 ** 0 * 2
+
+
+def test_scan_task_exhaustion_marks_failed(db_session):
+    from celery.exceptions import MaxRetriesExceededError
+    from sqlalchemy.exc import OperationalError
+
+    job = ScanJob(
+        target_url="https://max-retries.example.com",
+        status=ScanStatusEnum.PENDING,
+        options={},
+    )
+    db_session.add(job)
+    db_session.commit()
+    db_session.refresh(job)
+
+    db_err = OperationalError("SELECT 1", [], Exception("database is dead"))
+    with patch.object(scan_task, "retry", side_effect=MaxRetriesExceededError()):
+        with patch(
+            "app.worker.tasks._execute_scan_with_deadline",
+            side_effect=db_err,
+        ):
+            with pytest.raises(MaxRetriesExceededError):
+                scan_task(str(job.id), db=db_session)
+
+    db_session.refresh(job)
+    assert job.status == ScanStatusEnum.FAILED
+    assert "database connection failed after maximum retry attempts" in job.error_message.lower()
+
+
+

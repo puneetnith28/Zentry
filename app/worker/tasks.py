@@ -3,12 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-import socket
 from datetime import datetime, timezone
 from typing import Any
 
-from celery.exceptions import SoftTimeLimitExceeded
-import httpx
+from celery.exceptions import MaxRetriesExceededError, Retry, SoftTimeLimitExceeded
+from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.celery_app import celery_app
@@ -42,17 +41,15 @@ def classify_worker_exception(exc: BaseException) -> tuple[str, str]:
             "NETWORK_TIMEOUT",
             "Scan task exceeded maximum worker execution deadline",
         )
-    if isinstance(
-        exc,
-        (asyncio.TimeoutError, TimeoutError, httpx.TimeoutException, socket.timeout),
-    ):
+    cls_name = exc.__class__.__name__
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "Timeout" in cls_name:
         return (
             "NETWORK_TIMEOUT",
             "Scan execution timed out waiting for target response",
         )
-    if isinstance(
-        exc,
-        (socket.gaierror, ConnectionRefusedError, httpx.ConnectError, OSError),
+    if (
+        isinstance(exc, (ConnectionRefusedError, ConnectionResetError, OSError))
+        or cls_name in ("gaierror", "ConnectError")
     ) and not isinstance(exc, (ProhibitedDestinationError, TargetValidationError)):
         return (
             "TARGET_UNREACHABLE",
@@ -62,6 +59,27 @@ def classify_worker_exception(exc: BaseException) -> tuple[str, str]:
         "SCANNER_ERROR",
         "An internal error occurred during scan execution",
     )
+
+
+TRANSIENT_EXCEPTIONS = (
+    OperationalError,
+    DBAPIError,
+)
+
+NON_RETRYABLE_EXCEPTIONS = (
+    ProhibitedDestinationError,
+    TargetValidationError,
+    SoftTimeLimitExceeded,
+    asyncio.TimeoutError,
+    TimeoutError,
+)
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """Determine whether an error is eligible for automated task retry."""
+    if isinstance(exc, NON_RETRYABLE_EXCEPTIONS):
+        return False
+    return isinstance(exc, TRANSIENT_EXCEPTIONS)
 
 
 def _module_result_to_dict(result: Any) -> dict[str, Any]:
@@ -141,7 +159,8 @@ async def _execute_scan_with_deadline(
 @celery_app.task(
     name="app.worker.tasks.scan_task",
     bind=True,
-    max_retries=0,
+    max_retries=3,
+    default_retry_delay=2,
     time_limit=300,
     soft_time_limit=270,
 )
@@ -152,6 +171,7 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
     if db is None:
         db = SessionLocal()
         own_session = True
+    job = None
     try:
         # Look up the scan job from the database
         job = db.get(ScanJob, uuid.UUID(scan_id))
@@ -211,6 +231,9 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
                 f"[{code}] Scan exceeded maximum wall-clock execution budget of {int(global_timeout)}s"
             )
         except Exception as exc:
+            # If this is a transient DB error, re-raise to outer retry handler
+            if is_retryable_error(exc):
+                raise
             # Catastrophic failure outside the module try/catch
             logger.exception("Scan %s failed with unhandled exception", scan_id)
             if job.can_transition_to(ScanStatusEnum.FAILED):
@@ -220,7 +243,35 @@ def scan_task(self, scan_id: str, db: Session | None = None) -> None:
 
         # Save the final results to Postgres
         db.commit()
+    except Retry:
+        raise
+    except TRANSIENT_EXCEPTIONS as exc:
+        retries = getattr(getattr(self, "request", None), "retries", 0)
+        logger.warning(
+            "Transient database error for scan %s (attempt %d/3): %s",
+            scan_id,
+            retries + 1,
+            exc,
+        )
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        try:
+            countdown = min(60, (2 ** retries) * 2)
+            raise self.retry(exc=exc, countdown=countdown, max_retries=3)
+        except MaxRetriesExceededError:
+            logger.error("Scan %s exceeded maximum retries for transient error", scan_id)
+            if job is not None and job.can_transition_to(ScanStatusEnum.FAILED):
+                job.transition_to(ScanStatusEnum.FAILED)
+                job.error_message = "[SCANNER_ERROR] Database connection failed after maximum retry attempts"
+                try:
+                    db.commit()
+                except Exception:
+                    pass
+            raise
     finally:
         # Always clean up the database connection if created here
-        if own_session:
+        if own_session and db is not None:
             db.close()
