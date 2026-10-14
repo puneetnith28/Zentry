@@ -72,6 +72,9 @@ class ScanResultPayload(BaseModel):
     scanned_at: str
     modules: dict[str, Any] = Field(default_factory=dict)
     summary: FindingSummary = Field(default_factory=FindingSummary)
+    risk_score: int | None = None
+    risk_level: str | None = None
+    score_version: str | None = None
 
 
 class ScanDetailResponse(BaseModel):
@@ -99,6 +102,9 @@ class ScanSummaryItem(BaseModel):
     duration_seconds: float | None = None
     user_id: UUID | None = None
     summary: FindingSummary | None = None
+    risk_score: int | None = None
+    risk_level: str | None = None
+    score_version: str | None = None
     error_message: str | None = None
 
 

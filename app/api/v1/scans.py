@@ -21,6 +21,7 @@ from app.schemas.scan import (
     ScanResultPayload,
     ScanSummaryItem,
 )
+from app.services.common import calculate_risk_score
 from app.worker.tasks import scan_task
 
 router = APIRouter(prefix="/scans", tags=["scans"])
@@ -77,8 +78,20 @@ def list_scans(
     items: list[ScanSummaryItem] = []
     for job in jobs:
         summary: FindingSummary | None = None
-        if job.result_payload and "summary" in job.result_payload:
-            summary = FindingSummary(**job.result_payload["summary"])
+        risk_score: int | None = None
+        risk_level: str | None = None
+        score_version: str | None = None
+        if job.result_payload:
+            if "summary" in job.result_payload:
+                summary = FindingSummary(**job.result_payload["summary"])
+            risk_score = job.result_payload.get("risk_score")
+            risk_level = job.result_payload.get("risk_level")
+            score_version = job.result_payload.get("score_version")
+            if risk_score is None and summary is not None:
+                calc = calculate_risk_score(summary)
+                risk_score = calc.score
+                risk_level = calc.level
+                score_version = calc.version
 
         items.append(
             ScanSummaryItem(
@@ -92,6 +105,9 @@ def list_scans(
                 duration_seconds=job.duration_seconds,
                 user_id=job.user_id,
                 summary=summary,
+                risk_score=risk_score,
+                risk_level=risk_level,
+                score_version=score_version,
                 error_message=job.error_message,
             )
         )
@@ -200,11 +216,24 @@ def get_scan(
     result: ScanResultPayload | None = None
     if job.result_payload:
         summary_data = job.result_payload.get("summary", {})
+        summary_model = FindingSummary(**summary_data)
+        risk_score = job.result_payload.get("risk_score")
+        risk_level = job.result_payload.get("risk_level")
+        score_version = job.result_payload.get("score_version")
+        if risk_score is None and summary_model is not None:
+            calc = calculate_risk_score(summary_model)
+            risk_score = calc.score
+            risk_level = calc.level
+            score_version = calc.version
+
         result = ScanResultPayload(
             target=job.result_payload.get("target", job.target_url),
             scanned_at=job.result_payload.get("scanned_at", ""),
             modules=job.result_payload.get("modules", {}),
-            summary=FindingSummary(**summary_data),
+            summary=summary_model,
+            risk_score=risk_score,
+            risk_level=risk_level,
+            score_version=score_version,
         )
 
     return ScanDetailResponse(

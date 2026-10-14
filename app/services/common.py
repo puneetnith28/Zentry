@@ -180,6 +180,63 @@ def serialize(obj: Any) -> Any:
     return obj
 
 
+SCORE_VERSION: Final[str] = "v1.0"
+
+SEVERITY_WEIGHTS: Final[dict[str, int]] = {
+    FindingSeverity.CRITICAL.value: 25,
+    FindingSeverity.HIGH.value: 15,
+    FindingSeverity.MEDIUM.value: 8,
+    FindingSeverity.LOW.value: 3,
+    FindingSeverity.INFO.value: 1,
+}
+
+
+@dataclass(frozen=True, slots=True)
+class RiskScoreResult:
+    score: int
+    level: str
+    version: str = SCORE_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "score": self.score,
+            "level": self.level,
+            "version": self.version,
+        }
+
+
+def calculate_risk_score(summary: dict[str, int] | Any) -> RiskScoreResult:
+    """Calculate deterministic canonical risk score (0-100) and risk tier based on findings summary."""
+    if hasattr(summary, "model_dump"):
+        counts = summary.model_dump()
+    elif hasattr(summary, "__dict__"):
+        counts = summary.__dict__
+    elif isinstance(summary, dict):
+        counts = summary
+    else:
+        counts = {}
+
+    raw = 0
+    for sev, weight in SEVERITY_WEIGHTS.items():
+        count_val = counts.get(sev, 0)
+        if isinstance(count_val, (int, float)):
+            raw += count_val * weight
+
+    score = min(100, max(0, int(round(raw))))
+    if score >= 75:
+        level = "Critical Risk"
+    elif score >= 50:
+        level = "High Risk"
+    elif score >= 25:
+        level = "Moderate Risk"
+    elif score > 0:
+        level = "Low Risk"
+    else:
+        level = "Minimal Risk"
+
+    return RiskScoreResult(score=score, level=level, version=SCORE_VERSION)
+
+
 def summarize_findings(modules: dict[str, Any]) -> dict[str, int]:
     """Tally up the total number of findings across all scan modules by severity level."""
     counts = {s.value: 0 for s in FindingSeverity}
