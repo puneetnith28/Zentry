@@ -8,6 +8,7 @@ parsing. No external shell commands or subprocess calls.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import socket
 import ssl
 from dataclasses import asdict, dataclass, field
@@ -329,6 +330,7 @@ def _build_success_result(
         validation,
         expected_host=expected_host,
         expiring_soon_days=expiring_soon_days,
+        chain_certs=chain_certs,
     )
 
     return SSLScanResult(
@@ -577,25 +579,85 @@ def _build_chain_summary(certs: list[x509.Certificate]) -> list[ChainCertificate
     return summary
 
 
+def _has_san_extension(cert: x509.Certificate) -> bool:
+    try:
+        cert.extensions.get_extension_for_class(SubjectAlternativeName)
+        return True
+    except ExtensionNotFound:
+        return False
+
+
 def _hostname_matches_cert(hostname: str, cert: x509.Certificate) -> bool:
+    """Validate reference hostname against certificate according to RFC 6125.
+
+    SAN extension has absolute precedence: if present, Subject CN is ignored.
+    """
     host = hostname.lower().strip(".")
-    san_dns, _ = _extract_san(cert)
-    if san_dns:
-        return any(_match_wildcard(host, pattern.lower()) for pattern in san_dns)
-    cn = _parse_dn(cert.subject).common_name
-    if cn:
-        return _match_wildcard(host, cn.lower())
+    is_ip = False
+    try:
+        ipaddress.ip_address(host)
+        is_ip = True
+    except ValueError:
+        is_ip = False
+
+    if _has_san_extension(cert):
+        san_dns, san_ips = _extract_san(cert)
+        if is_ip:
+            return host in [ip.lower().strip() for ip in san_ips]
+        return any(_match_wildcard(host, pattern) for pattern in san_dns)
+
+    # RFC 6125 Section 6.4.4: Fallback to Common Name ONLY when SAN extension is absent and reference is not IP
+    if not is_ip:
+        cn = _parse_dn(cert.subject).common_name
+        if cn:
+            return _match_wildcard(host, cn)
     return False
 
 
 def _match_wildcard(host: str, pattern: str) -> bool:
-    pattern = pattern.strip(".")
-    if pattern == host:
+    """Evaluate RFC 6125 strict wildcard hostname matching.
+
+    Rules:
+    - Single-label wildcards only: '*.example.com' matches 'foo.example.com' but NOT 'sub.foo.example.com'.
+    - Wildcard does NOT match apex domain: '*.example.com' does NOT match 'example.com'.
+    - Wildcard must be the entire left-most label: '*foo.example.com' and 'foo.*.com' are rejected.
+    - Wildcards cannot be applied to top-level domains ('*.com') or IP addresses.
+    """
+    host = host.lower().strip(".")
+    pattern = pattern.lower().strip(".")
+
+    if host == pattern:
         return True
-    if pattern.startswith("*."):
-        suffix = pattern[1:]  # ".example.com"
-        return host == pattern[2:] or host.endswith(suffix)
-    return False
+
+    # IP addresses cannot match wildcard patterns
+    try:
+        ipaddress.ip_address(host)
+        return False
+    except ValueError:
+        pass
+
+    # Wildcard must be strictly '*.' as prefix
+    if not pattern.startswith("*."):
+        return False
+
+    pattern_labels = pattern.split(".")
+    # Must have at least three labels (e.g. ['*', 'example', 'com']), preventing TLD wildcards like '*.com'
+    if len(pattern_labels) < 3:
+        return False
+    if pattern_labels[0] != "*":
+        return False
+
+    host_labels = host.split(".")
+    # Exact label count match: single label replacement only
+    if len(host_labels) != len(pattern_labels):
+        return False
+
+    # Left-most label in host must not be empty
+    if not host_labels[0]:
+        return False
+
+    # All trailing labels must match identically
+    return host_labels[1:] == pattern_labels[1:]
 
 
 def _compose_validation(
@@ -628,6 +690,7 @@ def _derive_findings(
     *,
     expected_host: str,
     expiring_soon_days: int,
+    chain_certs: list[x509.Certificate] | None = None,
 ) -> list[Finding]:
     """Generates a list of security findings based on the extracted certificate and TLS data."""
     findings: list[Finding] = []
@@ -653,6 +716,21 @@ def _derive_findings(
                 ),
             )
         )
+
+    # Check intermediate certificates in chain for expiration
+    if chain_certs and len(chain_certs) > 1:
+        now = datetime.now(timezone.utc)
+        for idx, inter_cert in enumerate(chain_certs[1:], start=1):
+            not_after = _cert_datetime_utc(inter_cert, "not_valid_after")
+            if not_after < now:
+                cn = _parse_dn(inter_cert.subject).common_name or f"level-{idx}"
+                findings.append(
+                    Finding(
+                        code="CHAIN_CERT_EXPIRED",
+                        severity=FindingSeverity.HIGH,
+                        message=f"Intermediate certificate '{cn}' in chain expired on {not_after.isoformat()}",
+                    )
+                )
 
     # Flag self-signed certificates as high risk
     if cert.is_self_signed:
