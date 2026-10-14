@@ -130,6 +130,11 @@
   </div>
 
   <h2>Findings</h2>
+  {% if is_truncated %}
+  <p class="meta" style="color: #b45309; font-weight: bold;">
+    Note: Displaying top {{ all_findings|length }} most critical findings (out of {{ total_findings_count }} total recorded findings).
+  </p>
+  {% endif %}
   {% if all_findings %}
   <table>
     <thead>
