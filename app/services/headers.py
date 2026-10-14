@@ -65,6 +65,8 @@ class CookieInfo:
     secure: bool
     httponly: bool
     samesite: str | None
+    domain: str | None = None
+    path: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,15 +102,24 @@ def _parse_cookies(response: httpx.Response) -> list[CookieInfo]:
         name, _ = name_value.split("=", 1)
         attrs = {p.split("=")[0].lower(): True for p in parts[1:] if p}
         samesite = None
+        domain = None
+        path = None
         for part in parts[1:]:
-            if part.lower().startswith("samesite="):
+            lower_part = part.lower().strip()
+            if lower_part.startswith("samesite="):
                 samesite = part.split("=", 1)[1].strip()
+            elif lower_part.startswith("domain="):
+                domain = part.split("=", 1)[1].strip()
+            elif lower_part.startswith("path="):
+                path = part.split("=", 1)[1].strip()
         cookies.append(
             CookieInfo(
                 name=name.strip(),
                 secure="secure" in attrs,
                 httponly="httponly" in attrs,
                 samesite=samesite,
+                domain=domain,
+                path=path,
             )
         )
     return cookies
@@ -124,7 +135,7 @@ def _analyze_headers(
     findings: list[Finding] = []
     lower_headers = {k.lower(): v for k, v in response_headers.items()}
 
-    # Run through our master list of required security headers
+    # 1. Baseline required security headers presence
     for header_name, (code, severity) in SECURITY_HEADERS.items():
         if header_name not in lower_headers:
             # HSTS is only applicable over HTTPS, ignore if it's plain HTTP
@@ -138,29 +149,99 @@ def _analyze_headers(
                 )
             )
 
-    # Check for misconfigured HSTS
+    # 2. Strict-Transport-Security (HSTS) detailed checks
     hsts = lower_headers.get("strict-transport-security", "")
-    if hsts and "max-age=0" in hsts.replace(" ", ""):
+    if hsts and is_https:
+        clean_hsts = hsts.lower().replace(" ", "")
+        if "max-age=0" in clean_hsts:
+            findings.append(
+                Finding(
+                    code="HSTS_DISABLED",
+                    severity=FindingSeverity.HIGH,
+                    message="HSTS max-age is set to 0 (disabled)",
+                )
+            )
+        else:
+            # Check max-age duration
+            max_age_val = None
+            for directive in hsts.split(";"):
+                directive = directive.strip().lower()
+                if directive.startswith("max-age="):
+                    val_str = directive.split("=", 1)[1].strip()
+                    if val_str.isdigit():
+                        max_age_val = int(val_str)
+                    break
+            if max_age_val is not None and max_age_val < 15552000:
+                findings.append(
+                    Finding(
+                        code="HSTS_SHORT_MAX_AGE",
+                        severity=FindingSeverity.LOW,
+                        message=f"HSTS max-age ({max_age_val}s) is less than recommended 6 months (15552000s)",
+                    )
+                )
+            if "includesubdomains" not in clean_hsts:
+                findings.append(
+                    Finding(
+                        code="HSTS_NO_SUBDOMAINS",
+                        severity=FindingSeverity.LOW,
+                        message="HSTS header does not include 'includeSubDomains' directive",
+                    )
+                )
+
+    # 3. Content-Security-Policy detailed checks
+    csp = lower_headers.get("content-security-policy", "")
+    if csp:
+        lower_csp = csp.lower()
+        if "'unsafe-inline'" in lower_csp or "'unsafe-eval'" in lower_csp:
+            findings.append(
+                Finding(
+                    code="CSP_UNSAFE_DIRECTIVES",
+                    severity=FindingSeverity.MEDIUM,
+                    message="Content-Security-Policy contains 'unsafe-inline' or 'unsafe-eval'",
+                )
+            )
+        if "default-src *" in lower_csp or "script-src *" in lower_csp:
+            findings.append(
+                Finding(
+                    code="CSP_WILDCARD_SOURCE",
+                    severity=FindingSeverity.MEDIUM,
+                    message="Content-Security-Policy permits wildcard '*' source in script or default rules",
+                )
+            )
+
+    # 4. X-Frame-Options detailed checks
+    raw_xfo = lower_headers.get("x-frame-options", "").strip()
+    if raw_xfo:
+        upper_xfo = raw_xfo.upper()
+        if upper_xfo in ("ALLOWALL", "ALLOW"):
+            findings.append(
+                Finding(
+                    code="WEAK_X_FRAME_OPTIONS",
+                    severity=FindingSeverity.MEDIUM,
+                    message="X-Frame-Options allows framing",
+                )
+            )
+        elif upper_xfo not in ("DENY", "SAMEORIGIN") and not upper_xfo.startswith("ALLOW-FROM"):
+            findings.append(
+                Finding(
+                    code="MISCONFIGURED_X_FRAME_OPTIONS",
+                    severity=FindingSeverity.LOW,
+                    message=f"X-Frame-Options value '{raw_xfo}' is deprecated or non-standard",
+                )
+            )
+
+    # 5. X-Content-Type-Options detailed checks
+    raw_xcto = lower_headers.get("x-content-type-options", "").strip()
+    if raw_xcto and raw_xcto.lower() != "nosniff":
         findings.append(
             Finding(
-                code="HSTS_DISABLED",
-                severity=FindingSeverity.HIGH,
-                message="HSTS max-age is set to 0 (disabled)",
+                code="MISCONFIGURED_X_CONTENT_TYPE_OPTIONS",
+                severity=FindingSeverity.LOW,
+                message=f"X-Content-Type-Options value '{raw_xcto}' is invalid, expected 'nosniff'",
             )
         )
 
-    # Check if they explicitly allow framing (clickjacking risk)
-    xfo = lower_headers.get("x-frame-options", "").upper()
-    if xfo == "ALLOWALL" or xfo == "ALLOW":
-        findings.append(
-            Finding(
-                code="WEAK_X_FRAME_OPTIONS",
-                severity=FindingSeverity.MEDIUM,
-                message="X-Frame-Options allows framing",
-            )
-        )
-
-    # See if the server is leaking its exact software version
+    # 6. Server software version disclosure
     server = lower_headers.get("server", "")
     if server:
         findings.append(
@@ -171,7 +252,7 @@ def _analyze_headers(
             )
         )
 
-    # Scrutinize every cookie for secure transmission flags
+    # 7. Scrutinize every cookie for secure transmission flags
     for cookie in cookies:
         issues: list[str] = []
         if not cookie.secure and is_https:
@@ -180,8 +261,22 @@ def _analyze_headers(
             issues.append("missing HttpOnly")
         if cookie.samesite is None:
             issues.append("missing SameSite")
-        elif cookie.samesite.lower() == "none" and not cookie.secure:
-            issues.append("SameSite=None requires Secure")
+        else:
+            s_val = cookie.samesite.strip().lower()
+            if s_val not in ("strict", "lax", "none"):
+                issues.append(f"invalid SameSite value '{cookie.samesite}'")
+            elif s_val == "none" and not cookie.secure:
+                issues.append("SameSite=None requires Secure")
+
+        if cookie.name.startswith("__Host-"):
+            if not cookie.secure:
+                issues.append("__Host- requires Secure")
+            if cookie.domain:
+                issues.append("__Host- must not set Domain")
+        elif cookie.name.startswith("__Secure-"):
+            if not cookie.secure:
+                issues.append("__Secure- requires Secure")
+
         if issues:
             findings.append(
                 Finding(

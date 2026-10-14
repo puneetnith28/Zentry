@@ -117,3 +117,83 @@ async def test_inspect_headers_async_streams_without_buffering_body():
         assert result["headers"]["x-frame-options"] == "DENY"
         assert chunks_consumed == []
 
+
+def test_hsts_disabled_when_max_age_zero():
+    findings = _analyze_headers(
+        {"strict-transport-security": "max-age=0"},
+        [],
+        is_https=True,
+    )
+    codes = [f.code for f in findings]
+    assert "HSTS_DISABLED" in codes
+
+
+def test_hsts_short_max_age_and_missing_subdomains():
+    findings = _analyze_headers(
+        {"strict-transport-security": "max-age=86400"},
+        [],
+        is_https=True,
+    )
+    codes = [f.code for f in findings]
+    assert "HSTS_SHORT_MAX_AGE" in codes
+    assert "HSTS_NO_SUBDOMAINS" in codes
+
+
+def test_csp_unsafe_directives_and_wildcard():
+    findings = _analyze_headers(
+        {"content-security-policy": "default-src * 'unsafe-inline' 'unsafe-eval'"},
+        [],
+        is_https=True,
+    )
+    codes = [f.code for f in findings]
+    assert "CSP_UNSAFE_DIRECTIVES" in codes
+    assert "CSP_WILDCARD_SOURCE" in codes
+
+
+def test_xcto_misconfigured_finding():
+    findings = _analyze_headers(
+        {"x-content-type-options": "none"},
+        [],
+        is_https=True,
+    )
+    codes = [f.code for f in findings]
+    assert "MISCONFIGURED_X_CONTENT_TYPE_OPTIONS" in codes
+
+
+def test_xfo_weak_and_misconfigured_findings():
+    f_allow = _analyze_headers({"x-frame-options": "ALLOWALL"}, [], is_https=True)
+    assert "WEAK_X_FRAME_OPTIONS" in [f.code for f in f_allow]
+
+    f_invalid = _analyze_headers({"x-frame-options": "CUSTOM-ORIGIN"}, [], is_https=True)
+    assert "MISCONFIGURED_X_FRAME_OPTIONS" in [f.code for f in f_invalid]
+
+
+def test_cookie_security_multiple_cookies_and_prefixes():
+    from app.services.headers import CookieInfo
+
+    cookies = [
+        # Normal cookie missing Secure and HttpOnly
+        CookieInfo(name="session_id", secure=False, httponly=False, samesite="Lax"),
+        # __Host- cookie missing Secure and setting Domain
+        CookieInfo(name="__Host-token", secure=False, httponly=True, samesite="Strict", domain="example.com"),
+        # __Secure- cookie missing Secure
+        CookieInfo(name="__Secure-user", secure=False, httponly=True, samesite="Strict"),
+        # Cookie with SameSite=None without Secure
+        CookieInfo(name="cross_site", secure=False, httponly=True, samesite="None"),
+        # Valid secure cookie
+        CookieInfo(name="__Host-valid", secure=True, httponly=True, samesite="Strict"),
+    ]
+
+    findings = _analyze_headers({}, cookies, is_https=True)
+    cookie_findings = [f for f in findings if f.code == "INSECURE_COOKIE"]
+
+    # 4 cookies should be flagged as insecure, 1 (__Host-valid) should be clean
+    assert len(cookie_findings) == 4
+
+    messages = {f.message for f in cookie_findings}
+    assert any("session_id" in m and "missing Secure" in m and "missing HttpOnly" in m for m in messages)
+    assert any("__Host-token" in m and "__Host- requires Secure" in m and "__Host- must not set Domain" in m for m in messages)
+    assert any("__Secure-user" in m and "__Secure- requires Secure" in m for m in messages)
+    assert any("cross_site" in m and "SameSite=None requires Secure" in m for m in messages)
+
+
